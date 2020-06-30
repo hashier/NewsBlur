@@ -19,7 +19,9 @@
 @synthesize appDelegate;
 
 - (void)main {
-    appDelegate = [NewsBlurAppDelegate sharedAppDelegate];
+    dispatch_sync(dispatch_get_main_queue(), ^{
+        self.appDelegate = [NewsBlurAppDelegate sharedAppDelegate];
+    });
 
     while (YES) {
         BOOL fetched = [self fetchStories];
@@ -49,16 +51,19 @@
     
     if ([hashes count] == 0) {
 //        NSLog(@"Finished downloading unread stories. %d total", appDelegate.totalUnfetchedStoryCount);
-        [UIApplication sharedApplication].networkActivityIndicatorVisible = NO;
         dispatch_async(dispatch_get_main_queue(), ^{
-            if (![[[NSUserDefaults standardUserDefaults]
-                   objectForKey:@"offline_image_download"] boolValue]) {
+            [UIApplication sharedApplication].networkActivityIndicatorVisible = NO;
+            
+            if ([[NSUserDefaults standardUserDefaults] boolForKey:@"offline_text_download"]) {
+                [appDelegate.feedsViewController showCachingNotifier:@"Text" progress:0 hoursBack:1];
+                [appDelegate startOfflineFetchText];
+            } else if ([[NSUserDefaults standardUserDefaults] boolForKey:@"offline_image_download"]) {
+                [appDelegate.feedsViewController showCachingNotifier:@"Images" progress:0 hoursBack:1];
+                [appDelegate startOfflineFetchImages];
+            } else {
                 [appDelegate.feedsViewController showDoneNotifier];
                 [appDelegate.feedsViewController hideNotifier];
                 [appDelegate finishBackground];
-            } else {
-                [appDelegate.feedsViewController showCachingNotifier:0 hoursBack:1];
-                [appDelegate startOfflineFetchImages];
             }
         });
         return NO;
@@ -81,7 +86,9 @@
         [lock signal];
     }];
     
-    [UIApplication sharedApplication].networkActivityIndicatorVisible = YES;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [UIApplication sharedApplication].networkActivityIndicatorVisible = YES;
+    });
     
     [lock waitUntilDate:[NSDate dateWithTimeIntervalSinceNow:30]];
     [lock unlock];
@@ -159,30 +166,42 @@
         if (!strongSelf) return;
         BOOL anyInserted = NO;
         for (NSDictionary *story in [results objectForKey:@"stories"]) {
+            id storyFeedId = [story objectForKey:@"story_feed_id"];
+            id storyHash = [story objectForKey:@"story_hash"];
             NSString *storyTimestamp = [story objectForKey:@"story_timestamp"];
+            id imageUrls = [story objectForKey:@"image_urls"];
             BOOL inserted = [db executeUpdate:@"INSERT into stories "
                              "(story_feed_id, story_hash, story_timestamp, story_json) VALUES "
                              "(?, ?, ?, ?)",
-                             [story objectForKey:@"story_feed_id"],
-                             [story objectForKey:@"story_hash"],
+                             storyFeedId,
+                             storyHash,
                              storyTimestamp,
                              [story JSONRepresentation]
                              ];
-            if ([[story objectForKey:@"image_urls"] class] != [NSNull class] &&
-                [[story objectForKey:@"image_urls"] count]) {
-                for (NSString *imageUrl in [story objectForKey:@"image_urls"]) {
+            if ([appDelegate isFeedInTextView:storyFeedId]) {
+                [db executeUpdate:@"INSERT INTO cached_text "
+                 "(story_feed_id, story_hash, story_timestamp) VALUES "
+                 "(?, ?, ?)",
+                 storyFeedId,
+                 storyHash,
+                 storyTimestamp
+                 ];
+            }
+            if ([imageUrls class] != [NSNull class] &&
+                [imageUrls count]) {
+                for (NSString *imageUrl in imageUrls) {
                     [db executeUpdate:@"INSERT INTO cached_images "
                      "(story_feed_id, story_hash, image_url) VALUES "
                      "(?, ?, ?)",
-                     [story objectForKey:@"story_feed_id"],
-                     [story objectForKey:@"story_hash"],
+                     storyFeedId,
+                     storyHash,
                      imageUrl
                      ];
                 }
             }
             if (inserted) {
                 anyInserted = YES;
-                [storyHashes removeObject:[story objectForKey:@"story_hash"]];
+                [storyHashes removeObject:storyHash];
             }
             if ([[[NSUserDefaults standardUserDefaults] objectForKey:@"default_order"] isEqualToString:@"oldest"]) {
                 if ([storyTimestamp intValue] > appDelegate.latestFetchedStoryDate) {

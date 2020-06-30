@@ -90,12 +90,21 @@ static UIFont *textFont = nil;
     }
     
     NSUserDefaults *preferences = [NSUserDefaults standardUserDefaults];
-    BOOL isNotifications = [[preferences stringForKey:@"feed_swipe_left"]
-                            isEqualToString:@"notifications"];
+    NSString *swipe = [preferences stringForKey:@"feed_swipe_left"];
+    NSString *iconName;
+    
+    if (self.isSocial) {
+        iconName = @"menu_icn_fetch_subscribers.png";
+    } else if ([swipe isEqualToString:@"notifications"]) {
+        iconName = @"menu_icn_notifications.png";
+    } else if ([swipe isEqualToString:@"statistics"]) {
+        iconName = @"menu_icn_statistics.png";
+    } else {
+        iconName = @"train.png";
+    }
+    
     [self setDelegate:(NewsBlurViewController <MCSwipeTableViewCellDelegate> *)appDelegate.feedsViewController];
-    [self setFirstStateIconName:(self.isSocial ? @"menu_icn_fetch_subscribers.png" :
-                                 isNotifications ? @"menu_icn_notifications.png" :
-                                 @"train.png")
+    [self setFirstStateIconName:(iconName)
                      firstColor:UIColorFromRGB(0xA4D97B)
             secondStateIconName:nil
                     secondColor:nil
@@ -144,18 +153,23 @@ static UIFont *textFont = nil;
 @synthesize cell;
 
 - (void)drawRect:(CGRect)r {
+    if (!cell) {
+        return;
+    }
+    
     CGContextRef context = UIGraphicsGetCurrentContext();
     
     UIColor *backgroundColor;
     
     backgroundColor = cell.highlighted || cell.selected ?
-                      UIColorFromLightSepiaMediumDarkRGB(0xFFFFD2, 0xFFFFD2, 0x405060, 0x000022) :
+                      UIColorFromLightSepiaMediumDarkRGB(0xFFFFD2, 0xFFFFD2, 0x304050, 0x000022) :
                       cell.isSocial ? UIColorFromRGB(0xE6ECE8) :
                       cell.isSaved ? UIColorFromRGB(0xE9EBEE) :
                       UIColorFromRGB(0xF7F8F5);
 
-    [backgroundColor set];
-    CGContextFillRect(context, self.frame);
+//    [backgroundColor set];
+    self.backgroundColor = backgroundColor;
+    cell.backgroundColor = backgroundColor;
     
     if (cell.highlighted || cell.selected) {
 //        [NewsBlurAppDelegate fillGradient:CGRectMake(r.origin.x, r.origin.y + 1, r.size.width, r.size.height - 1) startColor:UIColorFromRGB(0xFFFFD2) endColor:UIColorFromRGB(0xFDED8D)];
@@ -196,34 +210,37 @@ static UIFont *textFont = nil;
     } else {
         font = [UIFont fontWithDescriptor:fontDescriptor size:0.0];
     }
-    NSInteger titleOffsetY = ((r.size.height - font.pointSize) / 2) - 2;
+    NSInteger titleOffsetY = ((r.size.height - font.pointSize) / 2) - 1;
     NSMutableParagraphStyle *paragraphStyle = [[NSMutableParagraphStyle defaultParagraphStyle] mutableCopy];
     paragraphStyle.lineBreakMode = NSLineBreakByTruncatingTail;
     paragraphStyle.alignment = NSTextAlignmentLeft;
-    
+    NSInteger faviconSize;
     if (cell.isSocial) {
         if (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPad) {
-            [cell.feedFavicon drawInRect:CGRectMake(9.0, 2.0, 28.0, 28.0)];
+            faviconSize = 28;
+            [cell.feedFavicon drawInRect:CGRectMake(9.0, CGRectGetMidY(r)-faviconSize/2, faviconSize, faviconSize)];
             [cell.feedTitle drawInRect:CGRectMake(46, titleOffsetY, r.size.width - ([cell.unreadCount offsetWidth] + 36) - 10 - 16, font.pointSize*1.4)
                    withAttributes:@{NSFontAttributeName: font,
                                     NSForegroundColorAttributeName: textColor,
                                     NSParagraphStyleAttributeName: paragraphStyle}];
         } else {
-            [cell.feedFavicon drawInRect:CGRectMake(9.0, 3.0, 26.0, 26.0)];
+            faviconSize = 26;
+            [cell.feedFavicon drawInRect:CGRectMake(9.0, CGRectGetMidY(r)-faviconSize/2, faviconSize, faviconSize)];
             [cell.feedTitle drawInRect:CGRectMake(42, titleOffsetY, r.size.width - ([cell.unreadCount offsetWidth] + 36) - 10 - 12, font.pointSize*1.4)
                    withAttributes:@{NSFontAttributeName: font,
                                     NSForegroundColorAttributeName: textColor,
                                     NSParagraphStyleAttributeName: paragraphStyle}];
         }
     } else {
+        faviconSize = 16;
         if (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPad) {
-            [cell.feedFavicon drawInRect:CGRectMake(12.0, 7.0, 16.0, 16.0)];
+            [cell.feedFavicon drawInRect:CGRectMake(12.0, CGRectGetMidY(r)-faviconSize/2, faviconSize, faviconSize)];
             [cell.feedTitle drawInRect:CGRectMake(36.0, titleOffsetY, r.size.width - ([cell.unreadCount offsetWidth] + 36) - 10, font.pointSize*1.4)
                    withAttributes:@{NSFontAttributeName: font,
                                     NSForegroundColorAttributeName: textColor,
                                     NSParagraphStyleAttributeName: paragraphStyle}];
         } else {
-            [cell.feedFavicon drawInRect:CGRectMake(9.0, 7.0, 16.0, 16.0)];
+            [cell.feedFavicon drawInRect:CGRectMake(9.0, CGRectGetMidY(r)-faviconSize/2, faviconSize, faviconSize)];
             [cell.feedTitle drawInRect:CGRectMake(34.0, titleOffsetY, r.size.width - ([cell.unreadCount offsetWidth] + 36) - 10, font.pointSize*1.4)
                    withAttributes:@{NSFontAttributeName: font,
                                     NSForegroundColorAttributeName: textColor,

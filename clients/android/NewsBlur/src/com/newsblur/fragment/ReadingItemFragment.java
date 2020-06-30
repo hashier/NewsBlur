@@ -12,14 +12,15 @@ import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.AsyncTask;
-import android.os.Build;
 import android.os.Bundle;
-import android.app.DialogFragment;
+import android.support.v4.app.DialogFragment;
 import android.text.TextUtils;
 import android.util.Log;
 import android.view.ContextMenu;
 import android.view.GestureDetector;
 import android.view.LayoutInflater;
+import android.view.Menu;
+import android.view.MenuItem;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.View.OnClickListener;
@@ -27,6 +28,8 @@ import android.view.ViewGroup;
 import android.webkit.WebView.HitTestResult;
 import android.widget.Button;
 import android.widget.ImageView;
+import android.widget.PopupMenu;
+import android.widget.ScrollView;
 import android.widget.TextView;
 
 import butterknife.ButterKnife;
@@ -34,16 +37,19 @@ import butterknife.Bind;
 import butterknife.OnClick;
 
 import com.newsblur.R;
+import com.newsblur.activity.FeedItemsList;
 import com.newsblur.activity.NbActivity;
 import com.newsblur.activity.Reading;
 import com.newsblur.domain.Classifier;
+import com.newsblur.domain.Feed;
 import com.newsblur.domain.Story;
 import com.newsblur.domain.UserDetails;
-import com.newsblur.service.NBSyncService;
+import com.newsblur.service.OriginalTextService;
 import com.newsblur.util.DefaultFeedView;
 import com.newsblur.util.FeedSet;
 import com.newsblur.util.FeedUtils;
 import com.newsblur.util.Font;
+import com.newsblur.util.PrefConstants.ThemeValue;
 import com.newsblur.util.PrefsUtils;
 import com.newsblur.util.StoryUtils;
 import com.newsblur.util.UIUtils;
@@ -52,13 +58,16 @@ import com.newsblur.view.FlowLayout;
 import com.newsblur.view.NewsblurWebview;
 import com.newsblur.view.ReadingScrollView;
 
+import java.util.ArrayList;
 import java.util.Date;
 import java.util.HashMap;
+import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-public class ReadingItemFragment extends NbFragment implements ClassifierDialogFragment.TagUpdateCallback {
-
+public class ReadingItemFragment extends NbFragment implements PopupMenu.OnMenuItemClickListener {
+    
+    private static final String BUNDLE_SCROLL_POS_REL = "scrollStateRel";
 	public static final String TEXT_SIZE_CHANGED = "textSizeChanged";
 	public static final String TEXT_SIZE_VALUE = "textSizeChangeValue";
     public static final String READING_FONT_CHANGED = "readingFontChanged";
@@ -69,8 +78,9 @@ public class ReadingItemFragment extends NbFragment implements ClassifierDialogF
 	private Classifier classifier;
 	@Bind(R.id.reading_webview) NewsblurWebview web;
     @Bind(R.id.custom_view_container) ViewGroup webviewCustomViewLayout;
-    @Bind(R.id.reading_scrollview) View fragmentScrollview;
+    @Bind(R.id.reading_scrollview) ScrollView fragmentScrollview;
 	private BroadcastReceiver textSizeReceiver, readingFontReceiver;
+    @Bind(R.id.reading_item_title) TextView itemTitle;
     @Bind(R.id.reading_item_authors) TextView itemAuthors;
 	@Bind(R.id.reading_feed_title) TextView itemFeed;
 	private boolean displayFeedDetails;
@@ -78,8 +88,12 @@ public class ReadingItemFragment extends NbFragment implements ClassifierDialogF
 	private View view;
 	private UserDetails user;
     private DefaultFeedView selectedFeedView;
+    private boolean textViewUnavailable;
+    @Bind(R.id.reading_textloading) TextView textViewLoadingMsg;
+    @Bind(R.id.reading_textmodefailed) TextView textViewLoadingFailedMsg;
     @Bind(R.id.save_story_button) Button saveButton;
     @Bind(R.id.share_story_button) Button shareButton;
+    @Bind(R.id.story_context_menu_button) Button menuButton;
 
     /** The story HTML, as provided by the 'content' element of the stories API. */
     private String storyContent;
@@ -97,6 +111,7 @@ public class ReadingItemFragment extends NbFragment implements ClassifierDialogF
     private boolean isWebLoadFinished;
     private boolean isSocialLoadFinished;
     private Boolean isLoadFinished = false;
+    private float savedScrollPosRel = 0f;
 
     private final Object WEBVIEW_CONTENT_MUTEX = new Object();
 
@@ -124,8 +139,6 @@ public class ReadingItemFragment extends NbFragment implements ClassifierDialogF
 		super.onCreate(savedInstanceState);
 		story = getArguments() != null ? (Story) getArguments().getSerializable("story") : null;
 
-		inflater = getActivity().getLayoutInflater();
-		
 		displayFeedDetails = getArguments().getBoolean("displayFeedDetails");
 		
 		user = PrefsUtils.getUserDetails(getActivity());
@@ -145,11 +158,19 @@ public class ReadingItemFragment extends NbFragment implements ClassifierDialogF
 		getActivity().registerReceiver(textSizeReceiver, new IntentFilter(TEXT_SIZE_CHANGED));
         readingFontReceiver = new ReadingFontReceiver();
         getActivity().registerReceiver(readingFontReceiver, new IntentFilter(READING_FONT_CHANGED));
+
+        if (savedInstanceState != null) {
+            savedScrollPosRel = savedInstanceState.getFloat(BUNDLE_SCROLL_POS_REL);
+            // we can't actually use the saved scroll position until the webview finishes loading
+        }
 	}
 
     @Override
     public void onSaveInstanceState(Bundle outState) {
-        outState.putSerializable("story", story);
+        super.onSaveInstanceState(outState);
+        int heightm = fragmentScrollview.getChildAt(0).getMeasuredHeight();
+        int pos = fragmentScrollview.getScrollY();
+        outState.putFloat(BUNDLE_SCROLL_POS_REL, (((float)pos)/heightm));
     }
 
 	@Override
@@ -177,18 +198,20 @@ public class ReadingItemFragment extends NbFragment implements ClassifierDialogF
         if (this.web != null ) { this.web.onResume(); }
     }
 
-	public View onCreateView(final LayoutInflater inflater, final ViewGroup container, final Bundle savedInstanceState) {
+	public View onCreateView(LayoutInflater inflater, ViewGroup container, Bundle savedInstanceState) {
+        this.inflater = inflater;
         view = inflater.inflate(R.layout.fragment_readingitem, null);
         ButterKnife.bind(this, view);
 
         Reading activity = (Reading) getActivity();
         fs = activity.getFeedSet();
 
-        selectedFeedView = PrefsUtils.getDefaultFeedView(activity, fs);
+        selectedFeedView = PrefsUtils.getDefaultViewModeForFeed(activity, story.feedId);
 
         registerForContextMenu(web);
         web.setCustomViewLayout(webviewCustomViewLayout);
         web.setWebviewWrapperLayout(fragmentScrollview);
+        web.setBackgroundColor(Color.TRANSPARENT);
         web.fragment = this;
         web.activity = activity;
 
@@ -206,29 +229,26 @@ public class ReadingItemFragment extends NbFragment implements ClassifierDialogF
 	}
 
     private void setupImmersiveViewGestureDetector() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
-            // Change the system visibility on the decorview from the activity so that the state is maintained as we page through
-            // fragments
-            ImmersiveViewHandler immersiveViewHandler = new ImmersiveViewHandler(getActivity().getWindow().getDecorView());
-            final GestureDetector gestureDetector = new GestureDetector(getActivity(), immersiveViewHandler);
-            View.OnTouchListener touchListener = new View.OnTouchListener() {
-                @Override
-                public boolean onTouch(View view, MotionEvent motionEvent) {
-                    return gestureDetector.onTouchEvent(motionEvent);
-                }
-            };
-            web.setOnTouchListener(touchListener);
-            view.setOnTouchListener(touchListener);
+        // Change the system visibility on the decorview from the activity so that the state is maintained as we page through
+        // fragments
+        ImmersiveViewHandler immersiveViewHandler = new ImmersiveViewHandler(getActivity().getWindow().getDecorView());
+        final GestureDetector gestureDetector = new GestureDetector(getActivity(), immersiveViewHandler);
+        View.OnTouchListener touchListener = new View.OnTouchListener() {
+            @Override
+            public boolean onTouch(View view, MotionEvent motionEvent) {
+                return gestureDetector.onTouchEvent(motionEvent);
+            }
+        };
+        web.setOnTouchListener(touchListener);
+        view.setOnTouchListener(touchListener);
 
-            getActivity().getWindow().getDecorView().setOnSystemUiVisibilityChangeListener(immersiveViewHandler);
-        }
+        getActivity().getWindow().getDecorView().setOnSystemUiVisibilityChangeListener(immersiveViewHandler);
     }
 
     @Override
     public void onCreateContextMenu(ContextMenu menu, View v, ContextMenu.ContextMenuInfo menuInfo) {
         HitTestResult result = web.getHitTestResult();
         if (result.getType() == HitTestResult.IMAGE_TYPE ||
-            result.getType() == HitTestResult.SRC_ANCHOR_TYPE ||
             result.getType() == HitTestResult.SRC_IMAGE_ANCHOR_TYPE ) {
             // if the long-pressed item was an image, see if we can pop up a little dialogue
             // that presents the alt text.  Note that images wrapped in links tend to get detected
@@ -238,38 +258,139 @@ public class ReadingItemFragment extends NbFragment implements ClassifierDialogF
             String mappedURL = imageUrlRemaps.get(imageURL);
             final String finalURL = mappedURL == null ? imageURL : mappedURL;
             final String altText = imageAltTexts.get(finalURL);
+            AlertDialog.Builder builder = new AlertDialog.Builder(getActivity());
+            builder.setTitle(finalURL);
             if (altText != null) {
-                AlertDialog.Builder builder = new AlertDialog.Builder(getActivity());
-                builder.setTitle(finalURL);
                 builder.setMessage(UIUtils.fromHtml(altText));
-                builder.setPositiveButton(R.string.alert_dialog_openimage, new DialogInterface.OnClickListener() {
-                    public void onClick(DialogInterface dialog, int id) {
-                        Intent i = new Intent(Intent.ACTION_VIEW);
-                        i.setData(Uri.parse(finalURL));
-                        try {
-                            startActivity(i);
-                        } catch (Exception e) {
-                            android.util.Log.wtf(this.getClass().getName(), "device cannot open URLs");
-                        }
-                    }
-                });
-                builder.setNegativeButton(R.string.alert_dialog_done, new DialogInterface.OnClickListener() {
-                    public void onClick(DialogInterface dialog, int id) {
-                        ; // do nothing
-                    }
-                });
-                builder.show();
+            } else {
+                builder.setMessage(finalURL);
             }
+            int actionRID = R.string.alert_dialog_openlink;
+            if (result.getType() == HitTestResult.IMAGE_TYPE || result.getType() == HitTestResult.SRC_IMAGE_ANCHOR_TYPE ) {
+                actionRID = R.string.alert_dialog_openimage;
+            }
+            builder.setPositiveButton(actionRID, new DialogInterface.OnClickListener() {
+                public void onClick(DialogInterface dialog, int id) {
+                    Intent i = new Intent(Intent.ACTION_VIEW);
+                    i.setData(Uri.parse(finalURL));
+                    try {
+                        startActivity(i);
+                    } catch (Exception e) {
+                        android.util.Log.wtf(this.getClass().getName(), "device cannot open URLs");
+                    }
+                }
+            });
+            builder.setNegativeButton(R.string.alert_dialog_done, new DialogInterface.OnClickListener() {
+                public void onClick(DialogInterface dialog, int id) {
+                    ; // do nothing
+                }
+            });
+            builder.show();
+        } else if (result.getType() == HitTestResult.SRC_ANCHOR_TYPE) {
+            String url = result.getExtra();
+            Intent intent = new Intent(Intent.ACTION_SEND);
+            intent.setType("text/plain");
+            intent.putExtra(Intent.EXTRA_SUBJECT, UIUtils.fromHtml(story.title).toString());
+            intent.putExtra(Intent.EXTRA_TEXT, url);
+            startActivity(Intent.createChooser(intent, "Share using"));
         } else {
             super.onCreateContextMenu(menu, v, menuInfo);
         }
     }
 
+    @OnClick(R.id.story_context_menu_button) void onClickMenuButton() {
+        PopupMenu pm = new PopupMenu(getActivity(), menuButton);
+        Menu menu = pm.getMenu();
+        pm.getMenuInflater().inflate(R.menu.story_context, menu);
+
+        menu.findItem(R.id.menu_reading_save).setTitle(story.starred ? R.string.menu_unsave_story : R.string.menu_save_story);
+        if (fs.isFilterSaved() || fs.isAllSaved() || (fs.getSingleSavedTag() != null)) menu.findItem(R.id.menu_reading_markunread).setVisible(false);
+
+        ThemeValue themeValue = PrefsUtils.getSelectedTheme(getActivity());
+        if (themeValue == ThemeValue.LIGHT) {
+            menu.findItem(R.id.menu_theme_light).setChecked(true);
+        } else if (themeValue == ThemeValue.DARK) {
+            menu.findItem(R.id.menu_theme_dark).setChecked(true);
+        } else if (themeValue == ThemeValue.BLACK) {
+            menu.findItem(R.id.menu_theme_black).setChecked(true);
+        }
+
+        pm.setOnMenuItemClickListener(this);
+        pm.show();
+    }
+
+    @Override
+    public boolean onMenuItemClick(MenuItem item) {
+		if (item.getItemId() == R.id.menu_reading_original) {
+            Intent i = new Intent(Intent.ACTION_VIEW);
+            i.setData(Uri.parse(story.permalink));
+            try {
+                startActivity(i);
+            } catch (Exception e) {
+                com.newsblur.util.Log.e(this, "device cannot open URLs");
+            }
+			return true;
+		} else if (item.getItemId() == R.id.menu_reading_sharenewsblur) {
+            String sourceUserId = null;
+            if (fs.getSingleSocialFeed() != null) sourceUserId = fs.getSingleSocialFeed().getKey();
+            DialogFragment newFragment = ShareDialogFragment.newInstance(story, sourceUserId);
+            newFragment.show(getActivity().getSupportFragmentManager(), "dialog");
+			return true;
+		} else if (item.getItemId() == R.id.menu_send_story) {
+			FeedUtils.sendStoryBrief(story, getActivity());
+			return true;
+		} else if (item.getItemId() == R.id.menu_send_story_full) {
+			FeedUtils.sendStoryFull(story, getActivity());
+			return true;
+		} else if (item.getItemId() == R.id.menu_textsize) {
+			TextSizeDialogFragment textSize = TextSizeDialogFragment.newInstance(PrefsUtils.getTextSize(getActivity()), TextSizeDialogFragment.TextSizeType.ReadingText);
+			textSize.show(getActivity().getSupportFragmentManager(), TextSizeDialogFragment.class.getName());
+			return true;
+		} else if (item.getItemId() == R.id.menu_font) {
+            ReadingFontDialogFragment storyFont = ReadingFontDialogFragment.newInstance(PrefsUtils.getFontString(getActivity()));
+            storyFont.show(getActivity().getSupportFragmentManager(), ReadingFontDialogFragment.class.getName());
+            return true;
+        } else if (item.getItemId() == R.id.menu_reading_save) {
+            if (story.starred) {
+			    FeedUtils.setStorySaved(story, false, getActivity(), null);
+            } else {
+			    FeedUtils.setStorySaved(story.storyHash, true, getActivity());
+            }
+			return true;
+        } else if (item.getItemId() == R.id.menu_reading_markunread) {
+            FeedUtils.markStoryUnread(story, getActivity());
+            return true;
+		} else if (item.getItemId() == R.id.menu_theme_light) {
+            PrefsUtils.setSelectedTheme(getActivity(), ThemeValue.LIGHT);
+            UIUtils.restartActivity(getActivity());
+            return true;
+        } else if (item.getItemId() == R.id.menu_theme_dark) {
+            PrefsUtils.setSelectedTheme(getActivity(), ThemeValue.DARK);
+            UIUtils.restartActivity(getActivity());
+            return true;
+        } else if (item.getItemId() == R.id.menu_theme_black) {
+            PrefsUtils.setSelectedTheme(getActivity(), ThemeValue.BLACK);
+            UIUtils.restartActivity(getActivity());
+            return true;
+        } else if (item.getItemId() == R.id.menu_intel) {
+            if (story.feedId.equals("0")) return true; // cannot train on feedless stories
+            StoryIntelTrainerFragment intelFrag = StoryIntelTrainerFragment.newInstance(story, fs);
+            intelFrag.show(getActivity().getSupportFragmentManager(), StoryIntelTrainerFragment.class.getName());
+            return true;
+        } else if(item.getItemId() == R.id.menu_go_to_feed){
+            FeedItemsList.startActivity(getContext(), fs,
+                    FeedUtils.getFeed(story.feedId), null);
+            return true;
+        } else {
+			return super.onOptionsItemSelected(item);
+		}
+    }
+
     @OnClick(R.id.save_story_button) void clickSave() {
         if (story.starred) {
-            FeedUtils.setStorySaved(story, false, getActivity());
+            FeedUtils.setStorySaved(story.storyHash, false, getActivity());
         } else {
-            FeedUtils.setStorySaved(story,true, getActivity());
+            FeedUtils.setStorySaved(story.storyHash,true, getActivity());
         }
     }
 
@@ -301,7 +422,6 @@ public class ReadingItemFragment extends NbFragment implements ClassifierDialogF
 	private void setupItemMetadata() {
         View feedHeader = view.findViewById(R.id.row_item_feed_header);
         View feedHeaderBorder = view.findViewById(R.id.item_feed_border);
-        TextView itemTitle = (TextView) view.findViewById(R.id.reading_item_title);
         TextView itemDate = (TextView) view.findViewById(R.id.reading_item_date);
         ImageView feedIcon = (ImageView) view.findViewById(R.id.reading_feed_icon);
 
@@ -338,15 +458,7 @@ public class ReadingItemFragment extends NbFragment implements ClassifierDialogF
 			itemFeed.setText(feedTitle);
 		}
 
-        itemTitle.setText(UIUtils.fromHtml(story.title));
-        itemDate.setText(StoryUtils.formatLongDate(getActivity(), new Date(story.timestamp)));
-
-        if (!TextUtils.isEmpty(story.authors)) {
-            itemAuthors.setText("•   " + story.authors);
-            if (classifier != null && classifier.authors.containsKey(story.authors)) {
-                updateTagView(story.authors, Classifier.AUTHOR, classifier.authors.get(story.authors));
-            }
-        }
+        itemDate.setText(StoryUtils.formatLongDate(getActivity(), story.timestamp));
 
         if (story.tags.length <= 0) {
             tagContainer.setVisibility(View.GONE);
@@ -355,16 +467,18 @@ public class ReadingItemFragment extends NbFragment implements ClassifierDialogF
 		itemAuthors.setOnClickListener(new OnClickListener() {
 			@Override
 			public void onClick(View v) {
-				ClassifierDialogFragment classifierFragment = ClassifierDialogFragment.newInstance(ReadingItemFragment.this, story.feedId, classifier, story.authors, Classifier.AUTHOR);
-				classifierFragment.show(getFragmentManager(), "dialog");		
+                if (story.feedId.equals("0")) return; // cannot train on feedless stories
+                StoryIntelTrainerFragment intelFrag = StoryIntelTrainerFragment.newInstance(story, fs);
+                intelFrag.show(getFragmentManager(), StoryIntelTrainerFragment.class.getName());
 			}	
 		});
 
 		itemFeed.setOnClickListener(new OnClickListener() {
 			@Override
 			public void onClick(View v) {
-				ClassifierDialogFragment classifierFragment = ClassifierDialogFragment.newInstance(ReadingItemFragment.this, story.feedId, classifier, feedTitle, Classifier.FEED);
-				classifierFragment.show(getFragmentManager(), "dialog");
+                if (story.feedId.equals("0")) return; // cannot train on feedless stories
+                StoryIntelTrainerFragment intelFrag = StoryIntelTrainerFragment.newInstance(story, fs);
+                intelFrag.show(getFragmentManager(), StoryIntelTrainerFragment.class.getName());
 			}
 		});
 
@@ -383,15 +497,20 @@ public class ReadingItemFragment extends NbFragment implements ClassifierDialogF
 			}
 		});
 
-		setupTags();
+		setupTagsAndIntel();
 	}
 
-	private void setupTags() {
+	private void setupTagsAndIntel() {
         int tag_green_text = UIUtils.getColor(getActivity(), R.color.tag_green_text);
         int tag_red_text = UIUtils.getColor(getActivity(), R.color.tag_red_text);
         Drawable tag_green_background = UIUtils.getDrawable(getActivity(), R.drawable.tag_background_positive);
         Drawable tag_red_background = UIUtils.getDrawable(getActivity(), R.drawable.tag_background_negative);
-		for (final String tag : story.tags) {
+
+        tagContainer.removeAllViews();
+		for (String tag : story.tags) {
+            // TODO: these textviews with compound images are buggy, but stubbed in to let colourblind users
+            //       see what is going on. these should be replaced with proper Chips when the v28 Chip lib
+            //       is in full release.
             View v = inflater.inflate(R.layout.tag_view, null);
 
             TextView tagText = (TextView) v.findViewById(R.id.tag_text);
@@ -402,10 +521,18 @@ public class ReadingItemFragment extends NbFragment implements ClassifierDialogF
                 case Classifier.LIKE:
                     UIUtils.setViewBackground(tagText, tag_green_background);
                     tagText.setTextColor(tag_green_text);
+                    Drawable icon_like = UIUtils.getDrawable(getActivity(), R.drawable.ic_like_active);
+                    icon_like.setBounds(0, 0, 30, 30);
+                    tagText.setCompoundDrawables(null, null, icon_like, null);
+                    tagText.setCompoundDrawablePadding(8);
                     break;
                 case Classifier.DISLIKE:
                     UIUtils.setViewBackground(tagText, tag_red_background);
                     tagText.setTextColor(tag_red_text);
+                    Drawable icon_dislike = UIUtils.getDrawable(getActivity(), R.drawable.ic_dislike_active);
+                    icon_dislike.setBounds(0, 0, 30, 30);
+                    tagText.setCompoundDrawables(null, null, icon_dislike, null);
+                    tagText.setCompoundDrawablePadding(8);
                     break;
                 }
             }
@@ -415,56 +542,107 @@ public class ReadingItemFragment extends NbFragment implements ClassifierDialogF
                 v.setOnClickListener(new OnClickListener() {
                     @Override
                     public void onClick(View view) {
-                        ClassifierDialogFragment classifierFragment = ClassifierDialogFragment.newInstance(ReadingItemFragment.this, story.feedId, classifier, tag, Classifier.TAG);
-                        classifierFragment.show(getFragmentManager(), "dialog");
+                        if (story.feedId.equals("0")) return; // cannot train on feedless stories
+                        StoryIntelTrainerFragment intelFrag = StoryIntelTrainerFragment.newInstance(story, fs);
+                        intelFrag.show(getFragmentManager(), StoryIntelTrainerFragment.class.getName());
                     }
                 });
             }
 
 			tagContainer.addView(v);
 		}
+
+        if (!TextUtils.isEmpty(story.authors)) {
+            itemAuthors.setText("•   " + story.authors);
+            if (classifier != null && classifier.authors.containsKey(story.authors)) {
+                switch (classifier.authors.get(story.authors)) {
+                    case Classifier.LIKE:
+                        itemAuthors.setTextColor(UIUtils.getColor(getActivity(), R.color.positive));
+                        break;
+                    case Classifier.DISLIKE:
+                        itemAuthors.setTextColor(UIUtils.getColor(getActivity(), R.color.negative));
+                        break;
+                    default:
+                        itemAuthors.setTextColor(UIUtils.getThemedColor(getActivity(), R.attr.readingItemMetadata, android.R.attr.textColor));
+                        break;
+                }
+            }
+        }
+
+        String title = story.title;
+        title = UIUtils.colourTitleFromClassifier(title, classifier);
+        itemTitle.setText(UIUtils.fromHtml(title));
 	}
 
-    public void switchSelectedFeedView() {
+    public void switchSelectedViewMode() {
+        // if we were already in text mode, switch back to story mode
+        if (selectedFeedView == DefaultFeedView.TEXT) {
+            setViewMode(DefaultFeedView.STORY);
+        } else {
+            setViewMode(DefaultFeedView.TEXT);
+        }
+
+        Reading activity = (Reading) getActivity();
+        activity.viewModeChanged();
+        // telling the activity to change modes will chain a call to viewModeChanged()
+    }
+
+    private void setViewMode(DefaultFeedView newMode) {
+        selectedFeedView = newMode;
+        PrefsUtils.setDefaultViewModeForFeed(getActivity(), story.feedId, newMode);
+    }
+
+    public void viewModeChanged() {
         synchronized (selectedFeedView) {
-            // if we were already in text mode, switch back to story mode
-            if (selectedFeedView == DefaultFeedView.TEXT) {
-                selectedFeedView = DefaultFeedView.STORY;
-            } else {
-                selectedFeedView = DefaultFeedView.TEXT;
-            }
-            Reading activity = (Reading) getActivity();
-            activity.defaultFeedViewChanged(selectedFeedView);
-            reloadStoryContent();
+            selectedFeedView = PrefsUtils.getDefaultViewModeForFeed(getActivity(), story.feedId);
+        }
+        // these can come from async tasks
+        Activity a = getActivity();
+        if (a != null) {
+            a.runOnUiThread(new Runnable() {
+                public void run() {
+                    reloadStoryContent();
+                }
+            });
         }
     }
 
-    public void setSelectedFeedView(DefaultFeedView newValue) {
-        selectedFeedView = newValue;
-        reloadStoryContent();
-    }
-
-    public DefaultFeedView getSelectedFeedView() {
+    public DefaultFeedView getSelectedViewMode() {
         return selectedFeedView;
     }
 
     private void reloadStoryContent() {
+        // reset indicators
+        textViewLoadingMsg.setVisibility(View.GONE);
+        textViewLoadingFailedMsg.setVisibility(View.GONE);
+        enableProgress(false);
+
+        boolean needStoryContent = false;
+
         if (selectedFeedView == DefaultFeedView.STORY) {
-            enableProgress(false);
+            needStoryContent = true;
+        } else {
+            if (textViewUnavailable) {
+                textViewLoadingFailedMsg.setVisibility(View.VISIBLE);
+                needStoryContent = true;
+            } else if (originalText == null) {
+                textViewLoadingMsg.setVisibility(View.VISIBLE);
+                enableProgress(true);
+                loadOriginalText();
+                // still show the story mode version, as the text mode one may take some time
+                needStoryContent = true;
+            } else {
+                setupWebview(originalText);
+                onContentLoadFinished();
+            }
+        }
+
+        if (needStoryContent) {
             if (storyContent == null) {
                 loadStoryContent();
             } else {
                 setupWebview(storyContent);
                 onContentLoadFinished();
-            }
-        } else {
-            if (originalText == null) {
-                enableProgress(true);
-                loadOriginalText();
-            } else {
-                setupWebview(originalText);
-                onContentLoadFinished();
-                enableProgress(false);
             }
         }
     }
@@ -482,20 +660,30 @@ public class ReadingItemFragment extends NbFragment implements ClassifierDialogF
      */
     public void offerStoryUpdate(Story story) {
         if (story == null) return;
-        if (! TextUtils.equals(story.storyHash, this.story.storyHash)) return;
+        if (! TextUtils.equals(story.storyHash, this.story.storyHash)) {
+            com.newsblur.util.Log.d(this, "prevented story list index offset shift");
+            return;
+        }
         this.story = story;
+        //if (AppConstants.VERBOSE_LOG) com.newsblur.util.Log.d(this, "got fresh story");
     }
 
     public void handleUpdate(int updateType) {
         if ((updateType & NbActivity.UPDATE_STORY) != 0) {
             updateSaveButton();
             updateShareButton();
+            setupItemCommentsAndShares();
         }
         if ((updateType & NbActivity.UPDATE_TEXT) != 0) {
             reloadStoryContent();
         }
         if ((updateType & NbActivity.UPDATE_SOCIAL) != 0) {
+            updateShareButton();
             setupItemCommentsAndShares();
+        }
+        if ((updateType & NbActivity.UPDATE_INTEL) != 0) {
+            classifier = FeedUtils.dbHelper.getClassifierForFeed(story.feedId);
+            setupTagsAndIntel();
         }
     }
 
@@ -509,11 +697,17 @@ public class ReadingItemFragment extends NbFragment implements ClassifierDialogF
                 @Override
                 protected void onPostExecute(String result) {
                     if (result != null) {
-                        ReadingItemFragment.this.originalText = result;
+                        if (OriginalTextService.NULL_STORY_TEXT.equals(result)) {
+                            // the server reported that text mode is not available.  kick back to story mode
+                            com.newsblur.util.Log.d(this, "orig text not avail for story: " + story.storyHash);
+                            textViewUnavailable = true;
+                        } else {
+                            ReadingItemFragment.this.originalText = result;
+                        }
                         reloadStoryContent();
                     } else {
-                        if (getActivity() != null) setupWebview(getActivity().getResources().getString(R.string.orig_text_loading));
-                        NBSyncService.getOriginalText(story.storyHash);
+                        com.newsblur.util.Log.d(this, "orig text not yet cached for story: " + story.storyHash);
+                        OriginalTextService.addPriorityHash(story.storyHash);
                         triggerSync();
                     }
                 }
@@ -534,7 +728,7 @@ public class ReadingItemFragment extends NbFragment implements ClassifierDialogF
                     ReadingItemFragment.this.storyContent = result;
                     reloadStoryContent();
                 } else {
-                    Log.w(this.getClass().getName(), "couldn't find story content for existing story.");
+                    com.newsblur.util.Log.w(this, "couldn't find story content for existing story.");
                     Activity act = getActivity();
                     if (act != null) act.finish();
                 }
@@ -542,7 +736,20 @@ public class ReadingItemFragment extends NbFragment implements ClassifierDialogF
         }.execute();
     }
 
-	private void setupWebview(String storyText) {
+	private void setupWebview(final String storyText) {
+        if (getActivity() == null) {
+            // sometimes we get called before the activity is ready. abort, since we will get a refresh when
+            // the cursor loads
+            return;
+        }
+        getActivity().runOnUiThread(new Runnable() {
+            public void run() {
+                _setupWebview(storyText);
+            }
+        });
+    }
+
+    private void _setupWebview(String storyText) {
         if (getActivity() == null) {
             // this method gets called by async UI bits that might hold stale fragment references with no assigned
             // activity.  If this happens, just abort the call.
@@ -561,15 +768,20 @@ public class ReadingItemFragment extends NbFragment implements ClassifierDialogF
 
             float currentSize = PrefsUtils.getTextSize(getActivity());
             Font font = PrefsUtils.getFont(getActivity());
+            ThemeValue themeValue = PrefsUtils.getSelectedTheme(getActivity());
 
             StringBuilder builder = new StringBuilder();
             builder.append("<html><head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=0\" />");
             builder.append(font.forWebView(currentSize));
             builder.append("<link rel=\"stylesheet\" type=\"text/css\" href=\"reading.css\" />");
-            if (PrefsUtils.isLightThemeSelected(getActivity())) {
+            if (themeValue == ThemeValue.LIGHT) {
+//                builder.append("<meta name=\"color-scheme\" content=\"light\"/>");
+//                builder.append("<meta name=\"supported-color-schemes\" content=\"light\"/>");
                 builder.append("<link rel=\"stylesheet\" type=\"text/css\" href=\"light_reading.css\" />");
-            } else {
+            } else if (themeValue == ThemeValue.DARK) {
                 builder.append("<link rel=\"stylesheet\" type=\"text/css\" href=\"dark_reading.css\" />");
+            } else if (themeValue == ThemeValue.BLACK) {
+                builder.append("<link rel=\"stylesheet\" type=\"text/css\" href=\"black_reading.css\" />");
             }
             builder.append("</head><body><div class=\"NB-story\">");
             builder.append(storyText);
@@ -613,8 +825,10 @@ public class ReadingItemFragment extends NbFragment implements ClassifierDialogF
         imageUrlRemaps = new HashMap<String,String>();
     }
 
+    private static final Pattern imgSniff = Pattern.compile("<img[^>]*(src\\s*=\\s*)\"([^\"]*)\"[^>]*>", Pattern.CASE_INSENSITIVE);
+
     private String swapInOfflineImages(String html) {
-        Matcher imageTagMatcher = Pattern.compile("<img[^>]*(src\\s*=\\s*)\"([^\"]*)\"[^>]*>", Pattern.CASE_INSENSITIVE).matcher(html);
+        Matcher imageTagMatcher = imgSniff.matcher(html);
         while (imageTagMatcher.find()) {
             String url = imageTagMatcher.group(2);
             String localPath = FeedUtils.storyImageCache.getCachedLocation(url);
@@ -657,8 +871,33 @@ public class ReadingItemFragment extends NbFragment implements ClassifierDialogF
         }
     }
 
+    /**
+     * A hook for performing actions that need to happen after all of the view has loaded, including
+     * the story's HTML content, all metadata views, and all associated social views.
+     */
     private void onLoadFinished() {
-        // TODO: perform any position-dependent UI behaviours here (@manderson23)
+        // if there was a scroll position saved, restore it
+        if (savedScrollPosRel > 0f) {
+            // ScrollViews containing WebViews are very particular about call timing.  since the inner view
+            // height can drastically change as viewport width changes, position has to be saved and restored
+            // as a proportion of total inner view height. that height won't be known until all the various 
+            // async bits of the fragment have finished loading.  however, even after the WebView calls back
+            // onProgressChanged with a value of 100, immediate calls to get the size of the view will return
+            // incorrect values.  even posting a runnable to the very end of our UI event queue may be
+            // insufficient time to allow the WebView to actually finish internally computing state and size.
+            // an additional fixed delay is added in a last ditch attempt to give the black-box platform
+            // threads a chance to finish their work.
+            fragmentScrollview.postDelayed(new Runnable() {
+                public void run() {
+                    int relPos = Math.round(fragmentScrollview.getChildAt(0).getMeasuredHeight() * savedScrollPosRel);
+                    fragmentScrollview.scrollTo(0, relPos);
+                }
+            }, 75L);
+        }
+    }
+
+    public void flagWebviewError() {
+        // TODO: enable a selective reload mechanism on load failures?
     }
 
 	private class TextSizeReceiver extends BroadcastReceiver {
@@ -676,48 +915,6 @@ public class ReadingItemFragment extends NbFragment implements ClassifierDialogF
         }
     }
 
-	@Override
-	public void updateTagView(String key, int classifierType, int classifierAction) {
-		switch (classifierType) {
-		case Classifier.AUTHOR:
-			switch (classifierAction) {
-			case Classifier.LIKE:
-				itemAuthors.setTextColor(UIUtils.getColor(getActivity(), R.color.positive));
-				break;
-			case Classifier.DISLIKE:
-				itemAuthors.setTextColor(UIUtils.getColor(getActivity(), R.color.negative));
-				break;
-			case Classifier.CLEAR_DISLIKE:
-				itemAuthors.setTextColor(UIUtils.getColor(getActivity(), R.color.half_darkgray));
-				break;
-			case Classifier.CLEAR_LIKE:
-				itemAuthors.setTextColor(UIUtils.getColor(getActivity(), R.color.half_darkgray));
-				break;	
-			}
-			break;
-		case Classifier.FEED:
-			switch (classifierAction) {
-			case Classifier.LIKE:
-				itemFeed.setTextColor(UIUtils.getColor(getActivity(), R.color.positive));
-				break;
-			case Classifier.DISLIKE:
-				itemFeed.setTextColor(UIUtils.getColor(getActivity(), R.color.negative));
-				break;
-			case Classifier.CLEAR_DISLIKE:
-				itemFeed.setTextColor(UIUtils.getColor(getActivity(), R.color.text));
-				break;
-			case Classifier.CLEAR_LIKE:
-				itemFeed.setTextColor(UIUtils.getColor(getActivity(), R.color.text));
-				break;
-			}
-			break;
-		case Classifier.TAG:
-			classifier.tags.put(key, classifierAction);
-			tagContainer.removeAllViews();
-			setupTags();
-			break;	
-		}
-	}
     private class ImmersiveViewHandler extends GestureDetector.SimpleOnGestureListener implements View.OnSystemUiVisibilityChangeListener {
         private View view;
 

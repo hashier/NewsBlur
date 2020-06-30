@@ -19,8 +19,11 @@
 @property (nonatomic, strong) NSArray *menuOptions;
 @property (nonatomic) IBOutlet NewsBlurAppDelegate *appDelegate;
 @property (nonatomic) IBOutlet UITableView *menuTableView;
+@property (nonatomic) IBOutlet UISegmentedControl *fontSizeSegment;
 @property (nonatomic) IBOutlet UISegmentedControl *themeSegmentedControl;
 
+- (void)rebuildOptions;
+- (IBAction)changeFontSize:(id)sender;
 - (IBAction)changeTheme:(id)sender;
 
 @end

@@ -64,6 +64,7 @@ public class Folder {
 	
 	@Override
 	public boolean equals(Object otherFolder) {
+        if (! (otherFolder instanceof Folder)) return false;
 		return TextUtils.equals(((Folder) otherFolder).name, name);
 	}
 
@@ -91,7 +92,7 @@ public class Folder {
      * folder on top, and also the expectation that *despite locale*, folders
      * starting with an underscore should show up on top.
      */
-    private static int compareFolderNames(String s1, String s2) {
+    public static int compareFolderNames(String s1, String s2) {
         if (TextUtils.equals(s1, s2)) return 0;
         if (s1.equals(AppConstants.ROOT_FOLDER)) return -1;
         if (s2.equals(AppConstants.ROOT_FOLDER)) return 1;

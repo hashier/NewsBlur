@@ -65,9 +65,12 @@ NEWSBLUR.Models.FeedOrFolder = Backbone.Model.extend({
                     return this.feed.id;
                 }
             }
-            if (this.feed.get('active')) {
-                return this.feed.id;
-            }
+
+            // if (!this.feed.get('active')) {
+            //     return;
+            // }
+
+            return this.feed.id;
         } else if (this.is_folder()) {
             return this.folders.feed_ids_in_folder(options);
         }
@@ -384,24 +387,34 @@ NEWSBLUR.Collections.Folders = Backbone.Collection.extend({
             return !feedA ? 1 : -1;
         }
         
+        var remove_articles = function(str) {
+            words = str.split(" ");
+            if (words.length <= 1) return str;
+            if (words[0] == 'the') return words.splice(1).join(" ");
+            return str;
+        };
+        
+        var feed_a_title = remove_articles(feedA.get('feed_title').toLowerCase());
+        var feed_b_title = remove_articles(feedB.get('feed_title').toLowerCase());
+        
         if (sort_order == 'ALPHABETICAL' || !sort_order) {
-            return feedA.get('feed_title').toLowerCase() > feedB.get('feed_title').toLowerCase() ? high : low;
+            return feed_a_title > feed_b_title ? high : low;
         } else if (sort_order == 'MOSTUSED') {
             return feedA.get('feed_opens') < feedB.get('feed_opens') ? high : 
                 (feedA.get('feed_opens') > feedB.get('feed_opens') ? low : 
-                (feedA.get('feed_title').toLowerCase() > feedB.get('feed_title').toLowerCase() ? high : low));
+                (feed_a_title > feed_b_title ? high : low));
         } else if (sort_order == 'RECENCY') {
             return feedA.get('last_story_seconds_ago') < feedB.get('last_story_seconds_ago') ? high : 
                 (feedA.get('last_story_seconds_ago') > feedB.get('last_story_seconds_ago') ? low : 
-                (feedA.get('feed_title').toLowerCase() > feedB.get('feed_title').toLowerCase() ? high : low));            
+                (feed_a_title > feed_b_title ? high : low));            
         } else if (sort_order == 'FREQUENCY') {
             return feedA.get('average_stories_per_month') < feedB.get('average_stories_per_month') ? high : 
                 (feedA.get('average_stories_per_month') > feedB.get('average_stories_per_month') ? low : 
-                (feedA.get('feed_title').toLowerCase() > feedB.get('feed_title').toLowerCase() ? high : low)); 
+                (feed_a_title > feed_b_title ? high : low)); 
         } else if (sort_order == 'SUBSCRIBERS') {
             return feedA.get('num_subscribers') < feedB.get('num_subscribers') ? high : 
                 (feedA.get('num_subscribers') > feedB.get('num_subscribers') ? low : 
-                (feedA.get('feed_title').toLowerCase() > feedB.get('feed_title').toLowerCase() ? high : low)); 
+                (feed_a_title > feed_b_title ? high : low)); 
         }
     }
 

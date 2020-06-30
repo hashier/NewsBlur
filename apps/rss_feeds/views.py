@@ -16,7 +16,7 @@ from apps.analyzer.models import get_classifiers_for_user
 from apps.reader.models import UserSubscription
 from apps.rss_feeds.models import MStory
 from utils.user_functions import ajax_login_required
-from utils import json_functions as json, feedfinder2 as feedfinder
+from utils import json_functions as json, feedfinder_forman as feedfinder
 from utils.feed_functions import relative_timeuntil, relative_timesince
 from utils.user_functions import get_user
 from utils.view_functions import get_argument_or_404
@@ -76,6 +76,7 @@ def load_feed_favicon(request, feed_id):
     try:
         feed_icon = MFeedIcon.objects.get(feed_id=feed_id)
     except MFeedIcon.DoesNotExist:
+        logging.user(request, "~FBNo feed icon found: %s" % feed_id)
         not_found = True
         
     if not_found or not feed_icon.data:
@@ -159,6 +160,27 @@ def feed_autocomplete(request):
 @json.json_view
 def load_feed_statistics(request, feed_id):
     user = get_user(request)
+    feed = get_object_or_404(Feed, pk=feed_id)
+    stats = assemble_statistics(user, feed_id)
+    
+    logging.user(request, "~FBStatistics: ~SB%s" % (feed))
+
+    return stats
+
+def load_feed_statistics_embedded(request, feed_id):
+    user = get_user(request)
+    feed = get_object_or_404(Feed, pk=feed_id)
+    stats = assemble_statistics(user, feed_id)
+    
+    logging.user(request, "~FBStatistics (~FCembedded~FB): ~SB%s" % (feed))
+    
+    return render_to_response('rss_feeds/statistics.xhtml', {
+        'stats': json.json_encode(stats),
+        'feed_js': json.json_encode(feed.canonical()),
+        'feed': feed,
+    }, context_instance=RequestContext(request))    
+    
+def assemble_statistics(user, feed_id):
     timezone = user.profile.timezone
     stats = dict()
     feed = get_object_or_404(Feed, pk=feed_id)
@@ -232,8 +254,6 @@ def load_feed_statistics(request, feed_id):
     stats['page_fetch_history'] = fetch_history['page_fetch_history']
     stats['feed_push_history'] = fetch_history['push_history']
     
-    logging.user(request, "~FBStatistics: ~SB%s" % (feed))
-
     return stats
 
 @json.json_view
@@ -251,7 +271,7 @@ def load_feed_settings(request, feed_id):
     
     return stats
 
-@ratelimit(minutes=5, requests=30)
+@ratelimit(minutes=1, requests=30)
 @json.json_view
 def exception_retry(request):
     user = get_user(request)
@@ -512,6 +532,8 @@ def original_text(request):
         'feed_id': story.story_feed_id,
         'story_hash': story.story_hash,
         'story_id': story.story_guid,
+        'image_urls': story.image_urls,
+        'secure_image_urls': Feed.secure_image_urls(story.image_urls),
         'original_text': original_text,
         'failed': not original_text or len(original_text) < 100,
     }
@@ -526,7 +548,8 @@ def original_story(request):
 
     if not story:
         logging.user(request, "~FYFetching ~FGoriginal~FY story page: ~FRstory not found")
-        return {'code': -1, 'message': 'Story not found.', 'original_page': None, 'failed': True}
+        # return {'code': -1, 'message': 'Story not found.', 'original_page': None, 'failed': True}
+        raise Http404
     
     original_page = story.fetch_original_page(force=force, request=request, debug=debug)
 

@@ -10,7 +10,7 @@ from apps.profile.tasks import EmailNewUser
 from apps.social.models import MActivity
 from apps.profile.models import blank_authenticate, RNewUserQueue
 from utils import log as logging
-from dns.resolver import query, NXDOMAIN, NoNameservers
+from dns.resolver import query, NXDOMAIN, NoNameservers, NoAnswer
 
 class LoginForm(forms.Form):
     username = forms.CharField(label=_("Username or Email"), max_length=30,
@@ -20,6 +20,7 @@ class LoginForm(forms.Form):
                                widget=forms.PasswordInput(attrs={'tabindex': 2, 'class': 'NB-input'}),
                                required=False)    
                                # error_messages={'required': 'Please enter a password.'})
+    add = forms.CharField(required=False, widget=forms.HiddenInput())
 
     def __init__(self, *args, **kwargs):
         self.user_cache = None
@@ -88,7 +89,8 @@ class SignupForm(forms.Form):
                              label=_(u'Email'),
                              required=True,
                              error_messages={'required': 'Please enter an email.'})
-    password = forms.CharField(widget=forms.PasswordInput(attrs={'class': 'NB-input'}),
+    password = forms.CharField(widget=forms.PasswordInput(attrs={'class': 'NB-input'}, 
+                                                          render_value=True,),
                                label=_(u'Password'),
                                required=False)
                                # error_messages={'required': 'Please enter a password.'})
@@ -115,7 +117,7 @@ class SignupForm(forms.Form):
                 domain = email.rsplit('@', 1)[-1]
                 if not query(domain, 'MX'):
                     raise forms.ValidationError('Sorry, that email is invalid.')
-            except (NXDOMAIN, NoNameservers):
+            except (NXDOMAIN, NoNameservers, NoAnswer):
                 raise forms.ValidationError('Sorry, that email is invalid.')
         return self.cleaned_data['email']
     
@@ -123,11 +125,13 @@ class SignupForm(forms.Form):
         username = self.cleaned_data.get('username', '')
         password = self.cleaned_data.get('password', '')
         email = self.cleaned_data.get('email', None)
+        
         exists = User.objects.filter(username__iexact=username).count()
         if exists:
             user_auth = authenticate(username=username, password=password)
             if not user_auth:
                 raise forms.ValidationError(_(u'Someone is already using that username.'))
+                
         return self.cleaned_data
         
     def save(self, profile_callback=None):

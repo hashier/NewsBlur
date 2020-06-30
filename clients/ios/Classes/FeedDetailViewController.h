@@ -12,16 +12,17 @@
 #import "Utilities.h"
 #import "NBNotifier.h"
 #import "MCSwipeTableViewCell.h"
+#import "FeedDetailTableCell.h"
 
 @class NewsBlurAppDelegate;
-@class FeedDetailTableCell;
 @class MCSwipeTableViewCell;
 
 @interface FeedDetailViewController : BaseViewController 
 <UITableViewDelegate, UITableViewDataSource,
  UIPopoverControllerDelegate,
  MCSwipeTableViewCellDelegate,
- UIGestureRecognizerDelegate, UISearchBarDelegate> {
+ UIGestureRecognizerDelegate, UISearchBarDelegate,
+ UITableViewDragDelegate> {
     NewsBlurAppDelegate *appDelegate;
     
     BOOL pageFetching;
@@ -52,6 +53,7 @@
 @property (nonatomic) UISearchBar *searchBar;
 @property (nonatomic) IBOutlet UIView *messageView;
 @property (nonatomic) IBOutlet UILabel *messageLabel;
+@property (nonatomic, strong) id standardInteractivePopGestureDelegate;
 
 @property (nonatomic, readwrite) BOOL pageFetching;
 @property (nonatomic, readwrite) BOOL pageFinished;
@@ -59,21 +61,23 @@
 @property (nonatomic, readwrite) BOOL isOnline;
 @property (nonatomic, readwrite) BOOL isShowingFetching;
 @property (nonatomic, readwrite) BOOL isDashboardModule;
-@property (nonatomic, readwrite) BOOL showContentPreview;
+@property (nonatomic) FeedDetailTextSize textSize;
 @property (nonatomic, readwrite) BOOL showImagePreview;
 @property (nonatomic, readwrite) BOOL invalidateFontCache;
 
 - (void)reloadData;
 - (void)resetFeedDetail;
 - (void)reloadStories;
-- (void)fetchNextPage:(void(^)())callback;
-- (void)fetchFeedDetail:(int)page withCallback:(void(^)())callback;
+- (void)fetchNextPage:(void(^)(void))callback;
+- (void)fetchFeedDetail:(int)page withCallback:(void(^)(void))callback;
 - (void)loadOfflineStories;
 - (void)fetchRiver;
-- (void)fetchRiverPage:(int)page withCallback:(void(^)())callback;
+- (void)fetchRiverPage:(int)page withCallback:(void(^)(void))callback;
 - (void)testForTryFeed;
 - (void)cacheStoryImages:(NSArray *)storyImageUrls;
 - (void)showStoryImage:(NSString *)imageUrl;
+- (void)flashInfrequentStories;
+- (void)gotoFolder:(NSString *)folder feedID:(NSString *)feedID;
 
 - (void)renderStories:(NSArray *)newStories;
 - (void)scrollViewDidScroll:(UIScrollView *)scroll;
@@ -89,12 +93,9 @@
 - (void)redrawUnreadStory;
 - (IBAction)doOpenMarkReadMenu:(id)sender;
 - (IBAction)doOpenSettingsMenu:(id)sender;
-- (void)confirmDeleteSite;
-- (void)confirmMuteSite;
 - (void)deleteSite;
 - (void)deleteFolder;
 - (void)muteSite;
-- (void)openMoveView;
 - (void)openTrainSite;
 - (void)openNotificationsWithFeed:(NSString *)feedId;
 - (void)openRenameSite;

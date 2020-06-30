@@ -202,6 +202,11 @@
           optional: true
           default: "true"
           example: "false"
+        - key: query
+          desc: >
+            Search for a keyword or phrase in the feed. Note that only premium users can search feeds.
+          optional: true
+          example: "pizza"
       tips:
         - >
           The story score (red, neutral, green) can be computed by following 
@@ -231,6 +236,17 @@
           desc: "Pass up to 100 story_hashes. Use with starred_story_hashes."
           optional: true
           example: "h=a1b2c3&h=d4e5f6"
+        - key: tag
+          desc: >
+            Only load stories under a specific saved story tag.
+          optional: true
+          example: "pizza"
+        - key: query
+          desc: >
+            Search for a keyword or phrase in the starred story feed. 
+            Note that only premium users can search feeds.
+          optional: true
+          example: "pizza"
 
     - url: /reader/starred_story_hashes
       method: GET
@@ -278,6 +294,16 @@
           optional: true
           default: "false"
           example: "true"
+        - key: query
+          desc: >
+            Search for a keyword or phrase in the folder. Note that only premium users can search feeds.
+          optional: true
+          example: "pizza"
+        - key: infrequent
+          desc: "Show only stories from infrequently published sites. Specify the number of stories/month (default: 30) or specify <code>false</code>."
+          optional: true
+          default: "false"
+          example: 30
       tips:
         - > 
             Counts are broken into three. Add them up for a total, but you shouldn't show or count the hidden stories:
@@ -1096,6 +1122,38 @@
           desc: "Object with folders and feed ids."
           required: true
           example: "[12, 24, 36, <br>{'Blogs': [56, 67, 78,<br />{'Photoblogs': [42]}]}]"
+
+    - url: /reader/save_search
+      method: POST
+      short_desc: "Add a new saved search feed."
+      long_desc: 
+        - "Add a new saved search feed, which is a shortcut to a search query on a specific feed."
+      params:
+        - key: feed_id
+          desc: "A single feed id of feed to search."
+          required: true
+          example: "42"
+        - key: query
+          desc: >
+            Search for a keyword or phrase in the feed. Note that only premium users can search feeds.
+          required: true
+          example: "pizza"
+          
+    - url: /reader/delete_search
+      method: POST
+      short_desc: "Removes a saved search feed."
+      long_desc: 
+        - "Deletes a saved search feed."
+      params:
+        - key: feed_id
+          desc: "A single feed id of feed to search."
+          required: true
+          example: "42"
+        - key: query
+          desc: >
+            The query originally used to save the search.
+          required: true
+          example: "pizza"
           
           
 - "intelligence classifiers":

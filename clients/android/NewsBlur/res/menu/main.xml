@@ -4,23 +4,26 @@
     <item android:id="@+id/menu_refresh"
           android:title="@string/menu_refresh"
           android:showAsAction="never" />
-    
-    <item android:id="@+id/menu_profile"
-          android:title="@string/menu_profile"
+
+    <item android:id="@+id/menu_search_feeds"
+          android:title="@string/menu_search_feeds"
           android:showAsAction="never" />
     
     <item android:id="@+id/menu_add_feed"
           android:title="@string/menu_add_feed"
           android:showAsAction="never" />
     
-    <item
-        android:id="@+id/menu_textsize"
-        android:showAsAction="never"
-        android:title="@string/menu_textsize"/>
+    <item android:id="@+id/menu_textsize"
+          android:showAsAction="never"
+          android:title="@string/menu_textsize"/>
 
     <item android:id="@+id/menu_settings"
           android:title="@string/settings"
           android:showAsAction="never" />
+
+    <item android:id="@+id/menu_widget"
+        android:title="@string/widget"
+        android:showAsAction="never" />
 
     <item android:id="@+id/menu_feedback"
           android:title="@string/menu_feedback"
@@ -44,5 +47,19 @@
     <item android:id="@+id/menu_logout"
           android:title="@string/menu_logout"
           android:showAsAction="never" />
+
+    <item android:id="@+id/menu_theme"
+          android:title="@string/menu_theme_choose" >
+        <menu>
+            <group android:checkableBehavior="single">
+                <item android:id="@+id/menu_theme_light"
+                      android:title="@string/light" />
+                <item android:id="@+id/menu_theme_dark"
+                      android:title="@string/dark" />
+                <item android:id="@+id/menu_theme_black"
+                      android:title="@string/black" />
+            </group>
+        </menu>
+    </item>
 
 </menu>

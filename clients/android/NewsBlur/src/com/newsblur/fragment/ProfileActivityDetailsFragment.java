@@ -4,8 +4,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.os.AsyncTask;
 import android.os.Bundle;
-import android.app.Fragment;
-import android.util.Log;
+import android.support.v4.app.Fragment;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
@@ -103,11 +102,18 @@ public abstract class ProfileActivityDetailsFragment extends Fragment implements
                 if (id == null) {
                     id = user.id;
                 }
+                if (id == null) {
+                    return null;
+                }
                 return loadActivityDetails(id, pageNumber);
             }
 
             @Override
             protected void onPostExecute(ActivityDetails[] result) {
+                if (result == null) {
+                    com.newsblur.util.Log.w(getClass().getName(), "couldn't load page from API");
+                    return;
+                }
                 if (pageNumber == 1 && result.length == 0) {
                     View emptyView = activityList.getEmptyView();
                     TextView textView = (TextView) emptyView.findViewById(R.id.empty_view_text);

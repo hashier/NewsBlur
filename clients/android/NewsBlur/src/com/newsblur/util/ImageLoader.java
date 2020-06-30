@@ -14,6 +14,7 @@ import android.graphics.BitmapFactory;
 import android.os.Process;
 import android.view.View;
 import android.widget.ImageView;
+import android.widget.RemoteViews;
 
 import com.newsblur.R;
 import com.newsblur.network.APIConstants;
@@ -34,10 +35,13 @@ public class ImageLoader {
 	private ImageLoader(FileCache fileCache, int emptyRID, int minImgHeight, boolean hideMissing, long memoryCacheSize) {
         this.memoryCache = new MemoryCache(memoryCacheSize);
 		this.fileCache = fileCache;
-		executorService = Executors.newFixedThreadPool(AppConstants.IMAGE_LOADER_THREAD_COUNT);
         this.emptyRID = emptyRID;
         this.minImgHeight = minImgHeight;
         this.hideMissing = hideMissing;
+
+        int threadCount = Runtime.getRuntime().availableProcessors() - 2;
+        if (threadCount < 1) threadCount = 1;
+		executorService = Executors.newFixedThreadPool(threadCount);
 	}
 
     public static ImageLoader asIconLoader(Context context) {
@@ -45,44 +49,96 @@ public class ImageLoader {
     }
 
     public static ImageLoader asThumbnailLoader(Context context) {
-        return new ImageLoader(FileCache.asThumbnailCache(context), android.R.color.transparent, 32, true, (Runtime.getRuntime().maxMemory()/5));
+        return new ImageLoader(FileCache.asThumbnailCache(context), android.R.color.transparent, 32, true, (Runtime.getRuntime().maxMemory()/6));
+    }
+
+    public static ImageLoader asThumbnailLoader(Context context, FileCache chainCache) {
+        FileCache cache = FileCache.asThumbnailCache(context);
+        cache.addChain(chainCache);
+        return new ImageLoader(cache, android.R.color.transparent, 32, true, (Runtime.getRuntime().maxMemory()/6));
     }
 	
-	public void displayImage(String url, ImageView imageView, float roundRadius, boolean cropSquare) {
+    public PhotoToLoad displayImage(String url, ImageView imageView, float roundRadius, boolean cropSquare) {
+        return displayImage(url, imageView, roundRadius, cropSquare, Integer.MAX_VALUE, false);
+    }
+
+    /**
+     * Synchronously check a URL/View pair to ensure the view isn't showing a stale mapping.  Useful for
+     * legacy listviews that aren't smart enough to un-map a child before re-using it.
+     */ 
+    public void preCheck(String url, ImageView imageView) {
+        String latestMappedUrl = imageViewMappings.get(imageView);
+        if ( (latestMappedUrl != null) && (!latestMappedUrl.equals(url)) ) {
+            imageView.setImageResource(emptyRID);
+        }
+    }
+
+    /**
+     * Synchronous background call coming from app widget on home screen
+     */
+    public void displayWidgetImage(String url, int imageViewId, int maxDimPX, RemoteViews remoteViews) {
         if (url == null) {
-			imageView.setImageResource(emptyRID);
+            remoteViews.setViewVisibility(imageViewId, View.GONE);
             return;
         }
 
-        if (url.startsWith("/")) {
-            url = APIConstants.buildUrl(url);
-        }
-
-		imageViewMappings.put(imageView, url);
-        PhotoToLoad photoToLoad = new PhotoToLoad(url, imageView, roundRadius, cropSquare);
+        url = buildUrlIfNeeded(url);
 
         // try from memory
-		Bitmap bitmap = memoryCache.get(url);
+        Bitmap bitmap = memoryCache.get(url);
+        if (bitmap != null) {
+            remoteViews.setImageViewBitmap(imageViewId, bitmap);
+            remoteViews.setViewVisibility(imageViewId, View.VISIBLE);
+            return;
+        }
 
-		if (bitmap != null) {
-            setViewImage(bitmap, photoToLoad);
-		} else {
-            // if not loaded, fetch and set in background
-            executorService.submit(new PhotosLoader(photoToLoad));
+        // try from disk
+        bitmap = getImageFromDisk(url, maxDimPX, false, 0f);
+        if (bitmap == null) {
+            // try for network
+            bitmap = getImageFromNetwork(url, maxDimPX,false, 0f);
+        }
+
+        if (bitmap != null) {
+            memoryCache.put(url, bitmap);
+            remoteViews.setImageViewBitmap(imageViewId, bitmap);
+            remoteViews.setViewVisibility(imageViewId, View.VISIBLE);
+        } else {
+            remoteViews.setViewVisibility(imageViewId, View.GONE);
+        }
+    }
+
+	public PhotoToLoad displayImage(String url, ImageView imageView, float roundRadius, boolean cropSquare, int maxDimPX, boolean allowDelay) {
+        if (url == null) {
 			imageView.setImageResource(emptyRID);
-		}
+            return null;
+        }
+
+        url = buildUrlIfNeeded(url);
+
+		imageViewMappings.put(imageView, url);
+        PhotoToLoad photoToLoad = new PhotoToLoad(url, imageView, roundRadius, cropSquare, maxDimPX, allowDelay);
+
+        executorService.submit(new PhotosLoader(photoToLoad));
+        return photoToLoad;
 	}
 
-	private class PhotoToLoad {
+	public class PhotoToLoad {
 		public String url;
 		public ImageView imageView;
         public float roundRadius;
         public boolean cropSquare;
-		public PhotoToLoad(final String u, final ImageView i, float rr, boolean cs) {
-			url = u; 
-			imageView = i;
-            roundRadius = rr;
-            cropSquare = cs;
+        public int maxDimPX;
+        public boolean allowDelay;
+        public boolean cancel;
+		public PhotoToLoad(final String url, final ImageView imageView, float roundRadius, boolean cropSquare, int maxDimPX, boolean allowDelay) {
+			PhotoToLoad.this.url = url; 
+			PhotoToLoad.this.imageView = imageView;
+            PhotoToLoad.this.roundRadius = roundRadius;
+            PhotoToLoad.this.cropSquare = cropSquare;
+            PhotoToLoad.this.maxDimPX = maxDimPX;
+            PhotoToLoad.this.allowDelay = allowDelay;
+            PhotoToLoad.this.cancel = false;
 		}
 	}
 
@@ -96,18 +152,49 @@ public class ImageLoader {
 		@Override
 		public void run() {
             Process.setThreadPriority(Process.THREAD_PRIORITY_DEFAULT + Process.THREAD_PRIORITY_LESS_FAVORABLE);
+            if (photoToLoad.cancel) return;
+
+            // try from memory
+            Bitmap bitmap = memoryCache.get(photoToLoad.url);
+
+            if (bitmap != null) {
+                setViewImage(bitmap, photoToLoad);
+                return;
+            }
+
+            // this not only sets a theoretical cap on how frequently we will churn against memory, storage, CPU,
+            // and the UI handler, it also ensures that if the loader gets very behind (as happens during fast
+            // scrolling, the caller has a few cycles to raise the cancellation flag, saving many resources.
+            if (photoToLoad.allowDelay) {
+                try {
+                    Thread.sleep(20);
+                } catch (InterruptedException ie) {
+                    return;
+                }
+            }
+
+            if (photoToLoad.cancel) return;
+
+            // ensure this imageview even still wants this image
+            if (!isUrlMapped(photoToLoad.imageView, photoToLoad.url)) return;
+
+            // callers frequently might botch this due to lazy view measuring
+            if (photoToLoad.maxDimPX < 1) {
+                photoToLoad.maxDimPX = Integer.MAX_VALUE;
+            }
             
-            File f = fileCache.getCachedFile(photoToLoad.url);
-            Bitmap bitmap = decodeBitmap(f);
+            // try from disk
+            bitmap = getImageFromDisk(photoToLoad.url, photoToLoad.maxDimPX, photoToLoad.cropSquare, photoToLoad.roundRadius);
             if (bitmap == null) {
-                fileCache.cacheFile(photoToLoad.url);
-                f = fileCache.getCachedFile(photoToLoad.url);
-                bitmap = decodeBitmap(f);
+                // try for network
+                if (photoToLoad.cancel) return;
+                bitmap = getImageFromNetwork(photoToLoad.url, photoToLoad.maxDimPX, photoToLoad.cropSquare, photoToLoad.roundRadius);
             }
 
             if (bitmap != null) {
                 memoryCache.put(photoToLoad.url, bitmap);			
             }
+            if (photoToLoad.cancel) return;
             setViewImage(bitmap, photoToLoad);
 		}
 	}
@@ -127,9 +214,10 @@ public class ImageLoader {
 			photoToLoad = p;
 		}
 		public void run() {
+            if (photoToLoad.cancel) return;
+
             // ensure this imageview even still wants this image
-            String latestMappedUrl = imageViewMappings.get(photoToLoad.imageView);
-            if (latestMappedUrl == null || !latestMappedUrl.equals(photoToLoad.url)) return;
+            if (!isUrlMapped(photoToLoad.imageView, photoToLoad.url)) return;
 
             if ((bitmap == null) || (bitmap.getHeight() < minImgHeight)) {
                 if (hideMissing) {
@@ -138,25 +226,11 @@ public class ImageLoader {
                     photoToLoad.imageView.setImageResource(emptyRID);
                 }
             } else {
-                bitmap = UIUtils.clipAndRound(bitmap, photoToLoad.roundRadius, photoToLoad.cropSquare);
-                if (bitmap != null ) {
-                    photoToLoad.imageView.setImageBitmap(bitmap);
-                }
+                photoToLoad.imageView.setVisibility(View.VISIBLE);
+                photoToLoad.imageView.setImageBitmap(bitmap);
 			}
 		}
 	}
-
-    private static Bitmap decodeBitmap(File f) {
-        // is is perfectly normal for files not to exist on cache misses or low
-        // device memory. this class will handle nulls with a queued action or
-        // placeholder image.
-        if (!f.exists()) return null;
-        try {
-            return BitmapFactory.decodeFile(f.getAbsolutePath());
-        } catch (Exception e) {
-            return null;
-        }
-    }
 
     /**
      * Directly access a previously cached image's bitmap.  This method is *not* for use
@@ -168,7 +242,37 @@ public class ImageLoader {
             url = APIConstants.buildUrl(url);
         }
         File f = fileCache.getCachedFile(url);
-        return decodeBitmap(f);
+        if (!f.exists()) return null;
+        try {
+            return BitmapFactory.decodeFile(f.getAbsolutePath());
+        } catch (Exception e) {
+            return null;
+        }
     }
 
+    public boolean isUrlMapped(ImageView view, String url) {
+        String latestMappedUrl = imageViewMappings.get(view);
+        if (latestMappedUrl == null || !latestMappedUrl.equals(url)) return false;
+        return true;
+    }
+
+    private String buildUrlIfNeeded(String url) {
+        if (url.startsWith("/")) {
+            url = APIConstants.buildUrl(url);
+        }
+        return url;
+    }
+
+    private Bitmap getImageFromDisk(String url, int maxDimPX, boolean cropSquare, float roundRadius) {
+        // the only reliable way to check a cached file is to try decoding it. the util method will
+        // return null if it fails
+        File f = fileCache.getCachedFile(url);
+        return UIUtils.decodeImage(f, maxDimPX, cropSquare, roundRadius);
+    }
+
+    private Bitmap getImageFromNetwork(String url, int maxDimPX, boolean cropSquare, float roundRadius) {
+        fileCache.cacheFile(url);
+        File f = fileCache.getCachedFile(url);
+        return UIUtils.decodeImage(f, maxDimPX, cropSquare, roundRadius);
+    }
 }

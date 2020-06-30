@@ -196,6 +196,25 @@ _.extend(NEWSBLUR.ReaderPreferences.prototype, {
                             'Window title'
                         ])
                     ]),
+                    $.make('div', { className: 'NB-preference NB-preference-showglobalsharedstories' }, [
+                        $.make('div', { className: 'NB-preference-options' }, [
+                            $.make('div', [
+                                $.make('input', { id: 'NB-preference-showglobalsharedstories-1', type: 'checkbox', name: 'show_global_shared_stories', value: 0 }),
+                                $.make('label', { 'for': 'NB-preference-showglobalsharedstories-1' }, [
+                                    'Show Global Shared Stories'
+                                ])
+                            ]),
+                            $.make('div', [
+                                $.make('input', { id: 'NB-preference-showinfrequentsitestories-1', type: 'checkbox', name: 'show_infrequent_site_stories', value: 0 }),
+                                $.make('label', { 'for': 'NB-preference-showinfrequentsitestories-1' }, [
+                                    'Show Infrequent Site Stories'
+                                ])
+                            ])
+                        ]),
+                        $.make('div', { className: 'NB-preference-label'}, [
+                            'Special Folders'
+                        ])
+                    ]),
                     $.make('div', { className: 'NB-preference NB-preference-autoopenfolder' }, [
                         $.make('div', { className: 'NB-preference-options' }, [
                             $.make('div', [
@@ -633,10 +652,6 @@ _.extend(NEWSBLUR.ReaderPreferences.prototype, {
                                 $.make('input', { type: 'checkbox', id: 'NB-preference-story-share-facebook', name: 'story_share_facebook' }),
                                 $.make('label', { 'for': 'NB-preference-story-share-facebook' })
                             ]),
-                            $.make('div', { className: 'NB-preference-option', title: 'Readability' }, [
-                                $.make('input', { type: 'checkbox', id: 'NB-preference-story-share-readability', name: 'story_share_readability' }),
-                                $.make('label', { 'for': 'NB-preference-story-share-readability' })
-                            ]),
                             $.make('div', { className: 'NB-preference-option', title: 'Instapaper' }, [
                                 $.make('input', { type: 'checkbox', id: 'NB-preference-story-share-instapaper', name: 'story_share_instapaper' }),
                                 $.make('label', { 'for': 'NB-preference-story-share-instapaper' })
@@ -656,10 +671,6 @@ _.extend(NEWSBLUR.ReaderPreferences.prototype, {
                             $.make('div', { className: 'NB-preference-option', title: 'Diigo' }, [
                                 $.make('input', { type: 'checkbox', id: 'NB-preference-story-share-diigo', name: 'story_share_diigo' }),
                                 $.make('label', { 'for': 'NB-preference-story-share-diigo' })
-                            ]),
-                            $.make('div', { className: 'NB-preference-option', title: 'Kippt' }, [
-                                $.make('input', { type: 'checkbox', id: 'NB-preference-story-share-kippt', name: 'story_share_kippt' }),
-                                $.make('label', { 'for': 'NB-preference-story-share-kippt' })
                             ]),
                             $.make('div', { className: 'NB-preference-option', title: 'Evernote' }, [
                                 $.make('input', { type: 'checkbox', id: 'NB-preference-story-share-evernote', name: 'story_share_evernote' }),
@@ -999,6 +1010,18 @@ _.extend(NEWSBLUR.ReaderPreferences.prototype, {
                 return false;
             }
         });
+        $('input[name=show_global_shared_stories]', $modal).each(function() {
+            if (NEWSBLUR.Preferences.show_global_shared_stories) {
+                $(this).attr('checked', true);
+                return false;
+            }
+        });
+        $('input[name=show_infrequent_site_stories]', $modal).each(function() {
+            if (NEWSBLUR.Preferences.show_infrequent_site_stories) {
+                $(this).attr('checked', true);
+                return false;
+            }
+        });
         $('input[name=open_feed_action]', $modal).each(function() {
             if ($(this).val() == NEWSBLUR.Preferences.open_feed_action) {
                 $(this).attr('checked', true);
@@ -1252,6 +1275,10 @@ _.extend(NEWSBLUR.ReaderPreferences.prototype, {
                 self.original_preferences['folder_counts'] != form['folder_counts']) {
               NEWSBLUR.app.feed_list.make_feeds();
               NEWSBLUR.app.feed_list.make_social_feeds();
+            }
+            if (self.original_preferences['show_global_shared_stories'] != form['show_global_shared_stories'] ||
+                self.original_preferences['show_infrequent_site_stories'] != form['show_infrequent_site_stories']) {
+              NEWSBLUR.app.feed_list.toggle_filter_feeds();
             }
             if (self.original_preferences['ssl'] != form['ssl']) {
                 NEWSBLUR.reader.check_and_load_ssl();

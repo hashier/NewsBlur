@@ -16,7 +16,6 @@
 #import "UserProfileViewController.h"
 #import "ShareViewController.h"
 #import "StoryPageControl.h"
-#import "Base64.h"
 #import "Utilities.h"
 #import "NSString+HTML.h"
 #import "NBContainerViewController.h"
@@ -25,11 +24,11 @@
 #import "SBJson4.h"
 #import "StringHelper.h"
 #import "StoriesCollection.h"
-#import "UIWebView+Offsets.h"
 #import "UIView+ViewController.h"
 #import "JNWThrottledBlock.h"
 
-#define iPadPro ([[UIDevice currentDevice] userInterfaceIdiom] == UIUserInterfaceIdiomPad && ([UIScreen mainScreen].bounds.size.height == 1366 || [UIScreen mainScreen].bounds.size.width == 1366))
+#define iPadPro12 ([[UIDevice currentDevice] userInterfaceIdiom] == UIUserInterfaceIdiomPad && ([UIScreen mainScreen].bounds.size.height == 1366 || [UIScreen mainScreen].bounds.size.width == 1366))
+#define iPadPro10 ([[UIDevice currentDevice] userInterfaceIdiom] == UIUserInterfaceIdiomPad && ([UIScreen mainScreen].bounds.size.height == 1112 || [UIScreen mainScreen].bounds.size.width == 1112))
 
 @interface StoryDetailViewController ()
 
@@ -77,17 +76,28 @@
     [audioSession setCategory:AVAudioSessionCategoryPlayback
                         error:nil];
     
-    self.webView.scalesPageToFit = YES;
+    self.webView.navigationDelegate = self;
+//    self.webView.scalesPageToFit = YES;
+    self.webView.allowsLinkPreview = YES;
 //    self.webView.multipleTouchEnabled = NO;
     
+    [self.webView.scrollView setAlwaysBounceVertical:appDelegate.storyPageControl.isHorizontal];
     [self.webView.scrollView setDelaysContentTouches:NO];
     [self.webView.scrollView setDecelerationRate:UIScrollViewDecelerationRateNormal];
     [self.webView.scrollView setAutoresizesSubviews:(UIViewAutoresizingFlexibleWidth |
                                                      UIViewAutoresizingFlexibleHeight)];
+    
+    if (@available(iOS 11.0, *)) {
+        if (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPad) {
+            self.webView.scrollView.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
+        }
+    }
+    
     [self.webView.scrollView addObserver:self forKeyPath:@"contentOffset"
                                  options:NSKeyValueObservingOptionNew | NSKeyValueObservingOptionOld
                                  context:nil];
     
+    [self.appDelegate prepareWebView:self.webView completionHandler:nil];
     [self clearWebView];
 
 //    UIPinchGestureRecognizer *pinchGesture = [[UIPinchGestureRecognizer alloc]
@@ -100,12 +110,12 @@
     doubleTapGesture.delegate = self;
     [self.webView addGestureRecognizer:doubleTapGesture];
     
-//    UITapGestureRecognizer *tapGesture = [[UITapGestureRecognizer alloc]
-//                                          initWithTarget:self action:@selector(tap:)];
-//    tapGesture.numberOfTapsRequired = 1;
-//    tapGesture.delegate = self;
-//    [tapGesture requireGestureRecognizerToFail:doubleTapGesture];
-//    [self.webView addGestureRecognizer:tapGesture];
+    UITapGestureRecognizer *tapGesture = [[UITapGestureRecognizer alloc]
+                                          initWithTarget:self action:@selector(tap:)];
+    tapGesture.numberOfTapsRequired = 1;
+    tapGesture.delegate = self;
+    [tapGesture requireGestureRecognizerToFail:doubleTapGesture];
+    [self.webView addGestureRecognizer:tapGesture];
     
     UITapGestureRecognizer *doubleDoubleTapGesture = [[UITapGestureRecognizer alloc]
                                                       initWithTarget:self
@@ -114,6 +124,12 @@
     doubleDoubleTapGesture.numberOfTapsRequired = 2;
     doubleDoubleTapGesture.delegate = self;
     [self.webView addGestureRecognizer:doubleDoubleTapGesture];
+    
+    if (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPhone) {
+        UIPinchGestureRecognizer *pinchGesture = [[UIPinchGestureRecognizer alloc]
+                                                  initWithTarget:self action:@selector(pinchGesture:)];
+        [self.webView addGestureRecognizer:pinchGesture];
+    }
     
     [[ThemeManager themeManager] addThemeGestureRecognizerToView:self.webView];
     
@@ -133,19 +149,12 @@
 }
 
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldReceiveTouch:(UITouch *)touch {
-//    NSLog(@"Gesture: %d - %d", (unsigned long)touch.tapCount, gestureRecognizer.state);
+//    NSLog(@"%@: taps: %@, state: %@", gestureRecognizer.class, @(touch.tapCount), @(gestureRecognizer.state));
     inDoubleTap = (touch.tapCount == 2);
     
     CGPoint pt = [self pointForGesture:gestureRecognizer];
     if (pt.x == CGPointZero.x && pt.y == CGPointZero.y) return YES;
 //    NSLog(@"Tapped point: %@", NSStringFromCGPoint(pt));
-    NSString *tagName = [webView stringByEvaluatingJavaScriptFromString:
-                         [NSString stringWithFormat:@"linkAt(%li, %li, 'tagName');",
-                          (long)pt.x,(long)pt.y]];
-    
-    if ([tagName isEqualToString:@"IMG"] && !inDoubleTap) {
-        return NO;
-    }
     
     if (inDoubleTap) {
         self.webView.scrollView.scrollEnabled = NO;
@@ -162,10 +171,32 @@
 }
 
 - (void)tap:(UITapGestureRecognizer *)gestureRecognizer {
-//    NSLog(@"Gesture tap: %d (%d) - %d", gestureRecognizer.state, UIGestureRecognizerStateEnded, inDoubleTap);
-
-    if (gestureRecognizer.state == UIGestureRecognizerStateEnded && gestureRecognizer.numberOfTouches == 1) {
-        [self tapImage:gestureRecognizer];
+//    NSLog(@"Gesture tap: %ld (%ld) - %d", (long)gestureRecognizer.state, (long)UIGestureRecognizerStateEnded, inDoubleTap);
+    
+    if (gestureRecognizer.state == UIGestureRecognizerStateEnded && gestureRecognizer.numberOfTouches == 1 && appDelegate.storyPageControl.autoscrollAvailable && self.presentedViewController == nil) {
+        CGPoint pt = [self pointForGesture:gestureRecognizer];
+        if (pt.x == CGPointZero.x && pt.y == CGPointZero.y) return;
+        if (inDoubleTap) return;
+//        NSLog(@"Tapped point: %@", NSStringFromCGPoint(pt));
+        [webView evaluateJavaScript:[NSString stringWithFormat:@"linkAt(%li, %li, 'tagName');", (long)pt.x,(long)pt.y] completionHandler:^(NSString *tagName, NSError *error) {
+            // Special case to handle the story title, Train, Save, and Share buttons.
+            if ([tagName isEqualToString:@"DIV"]) {
+                [webView evaluateJavaScript:[NSString stringWithFormat:@"linkAt(%li, %li, 'id');", (long)pt.x,(long)pt.y] completionHandler:^(NSString *identifier, NSError *error) {
+                    [webView evaluateJavaScript:[NSString stringWithFormat:@"linkAt(%li, %li, 'outerHTML');", (long)pt.x,(long)pt.y] completionHandler:^(NSString *outerHTML, NSError *error) {
+                        if ([identifier isEqualToString:@"NB-story"] || ![outerHTML containsString:@"NB-"]) {
+                            [appDelegate.storyPageControl showAutoscrollBriefly:YES];
+                        }
+                    }];
+                }];
+                
+                return;
+            }
+            
+            // Ignore links, videos, and iframes (e.g. embedded YouTube videos).
+            if (![@[@"A", @"VIDEO", @"IFRAME"] containsObject:tagName]) {
+                [appDelegate.storyPageControl showAutoscrollBriefly:YES];
+            }
+        }];
     }
 }
 
@@ -213,6 +244,30 @@
         }
         inDoubleTap = NO;
         [self performSelector:@selector(deferredEnableScrolling) withObject:nil afterDelay:0.0];
+        appDelegate.storyPageControl.autoscrollActive = NO;
+    }
+}
+
+- (void)pinchGesture:(UIPinchGestureRecognizer *)gestureRecognizer {
+    if (gestureRecognizer.state != UIGestureRecognizerStateEnded) {
+        return;
+    }
+    
+    appDelegate.storyPageControl.forceNavigationBarShown = gestureRecognizer.scale < 1;
+    [appDelegate.storyPageControl changedFullscreen];
+}
+
+- (void)screenEdgeSwipe:(UITapGestureRecognizer *)gestureRecognizer {
+    NSUserDefaults *userPreferences = [NSUserDefaults standardUserDefaults];
+    BOOL swipeEnabled = [[userPreferences stringForKey:@"story_detail_swipe_left_edge"]
+                         isEqualToString:@"pop_to_story_list"];
+    
+//    if (swipeEnabled && gestureRecognizer.state == UIGestureRecognizerStateBegan) {
+//        [appDelegate.storyPageControl setNavigationBarHidden:NO];
+//    }
+    
+    if (swipeEnabled && gestureRecognizer.state == UIGestureRecognizerStateEnded) {
+        [appDelegate hideStoryDetailView];
     }
 }
 
@@ -243,6 +298,8 @@
         [appDelegate.feedDetailViewController.view endEditing:YES];
     }
     [self storeScrollPosition:NO];
+    
+    self.fullStoryHTML = nil;
 }
 
 - (void)viewWillAppear:(BOOL)animated {
@@ -355,6 +412,10 @@
 //        NSLog(@"Already drawn story, drawing anyway: %@", [self.activeStory objectForKey:@"story_title"]);
 //        return;
     }
+    
+    if (self.activeStory == nil) {
+        return;
+    }
 
     scrollPct = 0;
     hasScrolled = NO;
@@ -368,12 +429,20 @@
     NSString *customStyle = @"";
     NSString *fontSizeClass = @"NB-";
     NSString *lineSpacingClass = @"NB-line-spacing-";
+    NSString *premiumOnlyClass = (self.inTextView && !appDelegate.isPremium) ? @"NB-premium-only" : @"";
     NSString *storyContent = [self.activeStory objectForKey:@"story_content"];
     if (self.inTextView && [self.activeStory objectForKey:@"original_text"]) {
         storyContent = [self.activeStory objectForKey:@"original_text"];
     }
+    NSString *changes = self.activeStory[@"story_changes"];
+    if (changes != nil) {
+        storyContent = changes;
+    }
     
     NSUserDefaults *userPreferences = [NSUserDefaults standardUserDefaults];
+    
+    NSString *premiumTextString = [NSString stringWithFormat:@"<div class=\"NB-feed-story-premium-only-divider\"></div>"
+                                   "<div class=\"NB-feed-story-premium-only-text\">The full Text view is a <a href=\"http://ios.newsblur.com/premium\">premium feature</a></div>"];
     
     fontStyleClass = [userPreferences stringForKey:@"fontStyle"];
     if (!fontStyleClass) {
@@ -397,14 +466,18 @@
 //    NSLog(@"Drawing story: %@ / %d", [self.activeStory objectForKey:@"story_title"], contentWidth);
     
     if (UIInterfaceOrientationIsLandscape(orientation) && !self.isPhoneOrCompact) {
-        if (iPadPro) {
-            contentWidthClass = @"NB-ipad-wide NB-ipad-pro-wide";
+        if (iPadPro12) {
+            contentWidthClass = @"NB-ipad-wide NB-ipad-pro-12-wide";
+        } else if (iPadPro10) {
+            contentWidthClass = @"NB-ipad-wide NB-ipad-pro-10-wide";
         } else {
             contentWidthClass = @"NB-ipad-wide";
         }
     } else if (!UIInterfaceOrientationIsLandscape(orientation) && !self.isPhoneOrCompact) {
-        if (iPadPro) {
-            contentWidthClass = @"NB-ipad-narrow NB-ipad-pro-narrow";
+        if (iPadPro12) {
+            contentWidthClass = @"NB-ipad-narrow NB-ipad-pro-12-narrow";
+        } else if (iPadPro10) {
+            contentWidthClass = @"NB-ipad-narrow NB-ipad-pro-10-narrow";
         } else {
             contentWidthClass = @"NB-ipad-narrow";
         }
@@ -439,11 +512,7 @@
                             appDelegate.storiesCollection.isReadView) ?
                             @"NB-river" : @"NB-non-river";
     
-    NSString *themeStyle = [ThemeManager themeManager].themeCSSSuffix;
-    
-    if (themeStyle.length) {
-        themeStyle = [NSString stringWithFormat:@"<link rel=\"stylesheet\" type=\"text/css\" href=\"storyDetailView%@.css\">", themeStyle];
-    }
+    NSString *themeStyle = [NSString stringWithFormat:@"<link rel=\"stylesheet\" type=\"text/css\" id=\"NB-theme-style\" href=\"storyDetailView%@.css\">", [ThemeManager themeManager].themeCSSSuffix];
     
     // set up layout values based on iPad/iPhone
     headerString = [NSString stringWithFormat:@
@@ -465,6 +534,7 @@
                             "<html>"
                             "<head>%@</head>" // header string
                             "<body id=\"story_pane\" class=\"%@ %@\">"
+                            "    <div class=\"%@\" id=\"NB-premium-check\">"
                             "    <div class=\"%@\" id=\"NB-font-style\"%@>"
                             "    <div class=\"%@\" id=\"NB-font-size\">"
                             "    <div class=\"%@\" id=\"NB-line-spacing\">"
@@ -473,6 +543,7 @@
                             headerString,
                             contentWidthClass,
                             riverClass,
+                            premiumOnlyClass,
                             fontStyleClass,
                             customStyle,
                             fontSizeClass,
@@ -485,6 +556,7 @@
                             "    </div>" // line-spacing
                             "    </div>" // font-size
                             "    </div>" // font-style
+                            "    </div>" // premium check
                             "</body>"
                             "</html>"
                             ];
@@ -492,6 +564,7 @@
     NSString *htmlContent = [NSString stringWithFormat:@
                              "%@" // header
                              "        <div id=\"NB-story\" class=\"NB-story\">%@</div>"
+                             "        <div class=\"NB-text-view-premium-only\">%@</div>"
                              "        <div id=\"NB-sideoptions-container\">%@</div>"
                              "        <div id=\"NB-comments-wrapper\">"
                              "            %@" // friends comments
@@ -500,6 +573,7 @@
                              "%@", // footer
                              htmlTop,
                              storyContent,
+                             premiumTextString,
                              sharingHtmlString,
                              commentString,
                              footerString,
@@ -514,15 +588,25 @@
     
     dispatch_async(dispatch_get_main_queue(), ^{
 //        NSLog(@"Drawing Story: %@", [self.activeStory objectForKey:@"story_title"]);
-        [self.webView setMediaPlaybackRequiresUserAction:NO];
+//        [self.webView setMediaPlaybackRequiresUserAction:NO];
+//        self.webView.allowsInlineMediaPlayback = YES;
         [self loadHTMLString:htmlTopAndBottom];
-        [appDelegate.storyPageControl setTextButton:self];
+        [self.appDelegate.storyPageControl setTextButton:self];
     });
-
+    
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [self loadStory];
+    });
+    
     self.activeStoryId = [self.activeStory objectForKey:@"story_hash"];
 }
 
 - (void)drawFeedGradient {
+    NSUserDefaults *preferences = [NSUserDefaults standardUserDefaults];
+    BOOL shouldHideStatusBar = [preferences boolForKey:@"story_hide_status_bar"];
+    UIInterfaceOrientation orientation = [[UIApplication sharedApplication] statusBarOrientation];
+    BOOL shouldOffsetFeedGradient = UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPhone && !UIInterfaceOrientationIsLandscape(orientation) && self.navigationController.navigationBarHidden && !shouldHideStatusBar;
+    CGFloat yOffset = shouldOffsetFeedGradient ? appDelegate.storyPageControl.statusBarBackgroundView.bounds.size.height - 1 : -1;
     NSString *feedIdStr = [NSString stringWithFormat:@"%@",
                            [self.activeStory
                             objectForKey:@"story_feed_id"]];
@@ -535,7 +619,7 @@
     
     self.feedTitleGradient = [appDelegate
                               makeFeedTitleGradient:feed
-                              withRect:CGRectMake(0, -1, CGRectGetWidth(self.view.bounds), 21)]; // 1024 hack for self.webView.frame.size.width
+                              withRect:CGRectMake(0, yOffset, CGRectGetWidth(self.view.bounds), 21)]; // 1024 hack for self.webView.frame.size.width
     self.feedTitleGradient.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     self.feedTitleGradient.tag = FEED_TITLE_GRADIENT_TAG; // Not attached yet. Remove old gradients, first.
     
@@ -554,6 +638,16 @@
         self.webView.scrollView.scrollIndicatorInsets = UIEdgeInsetsMake(9, 0, 0, 0);
     }
     [self.webView insertSubview:feedTitleGradient aboveSubview:self.webView.scrollView];
+    
+    if (@available(iOS 11.0, *)) {
+        if (self.view.safeAreaInsets.top > 0.0 && UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPhone && shouldHideStatusBar) {
+            feedTitleGradient.alpha = self.navigationController.navigationBarHidden ? 1 : 0;
+            
+            [UIView animateWithDuration:0.3 animations:^{
+                feedTitleGradient.alpha = self.navigationController.navigationBarHidden ? 0 : 1;
+            }];
+        }
+    }
 }
 
 - (void)showStory {
@@ -697,6 +791,9 @@
         }
     }
     
+    NSString *storyToggleChanges = [self.activeStory[@"has_modifications"] boolValue] ? [NSString stringWithFormat:@"<a href=\"http://ios.newsblur.com/togglechanges\" "
+                                                                           "class=\"NB-story-toggle-changes\" id=\"NB-story-toggle-changes\">%@</a><span class=\"NB-middot\">&middot;</span>", self.activeStory[@"story_changes"] != nil ? @"Hide Changes" : @"Show Changes"] : @"";
+    
     NSString *storyDate = [Utilities formatLongDateFromTimestamp:[[self.activeStory
                                                                   objectForKey:@"story_timestamp"]
                                                                   integerValue]];
@@ -706,6 +803,7 @@
                              "  %@"
                              "  <a href=\"%@\" class=\"NB-story-permalink\">%@</a>"
                              "</div>"
+                             "%@"
                              "<div class=\"NB-story-date\">%@</div>"
                              "%@"
                              "%@"
@@ -715,6 +813,7 @@
                              storyUnread,
                              storyPermalink,
                              storyTitle,
+                             storyToggleChanges,
                              storyDate,
                              storyAuthor,
                              storyTags,
@@ -1245,72 +1344,120 @@
         }
         
         if (appDelegate.storyPageControl.currentPage != self) return;
-        if (!hasScrolled) hasScrolled = YES;
 
         int webpageHeight = self.webView.scrollView.contentSize.height;
-        int viewportHeight = self.webView.scrollView.frame.size.height;
+        int viewportHeight = self.view.frame.size.height;
         int topPosition = self.webView.scrollView.contentOffset.y;
+        int safeBottomMargin = 0;
+        int minimumTopPositionWhenHidden = -1;
+        
+        if (@available(iOS 11.0, *)) {
+            CGFloat bottomInset = appDelegate.storyPageControl.view.safeAreaInsets.bottom;
+            
+            safeBottomMargin = -1 * bottomInset / 2;
+            
+            if (bottomInset != 0) {
+                minimumTopPositionWhenHidden = 0;
+            }
+        }
+        
         int bottomPosition = webpageHeight - topPosition - viewportHeight;
         BOOL singlePage = webpageHeight - 200 <= viewportHeight;
         BOOL atBottom = bottomPosition < 150;
         BOOL atTop = topPosition < 10;
+        BOOL nearTop = topPosition < 100;
+        
+        if (!hasScrolled && topPosition != 0) {
+            hasScrolled = YES;
+        }
+        
+        BOOL isHorizontal = appDelegate.storyPageControl.isHorizontal;
+        BOOL isNavBarHidden = self.navigationController.navigationBarHidden;
+        
+        if (!isHorizontal && appDelegate.storyPageControl.previousPage.pageIndex < 0) {
+            [appDelegate.storyPageControl setNavigationBarHidden:NO];
+        } else if (isHorizontal && topPosition <= minimumTopPositionWhenHidden && isNavBarHidden) {
+            [appDelegate.storyPageControl setNavigationBarHidden:NO];
+        } else if (!nearTop && !isNavBarHidden && self.canHideNavigationBar) {
+            [appDelegate.storyPageControl setNavigationBarHidden:YES];
+        }
+        
         if (!atTop && !atBottom && !singlePage) {
+            BOOL traversalVisible = appDelegate.storyPageControl.traverseView.alpha > 0;
+            
             // Hide
             [UIView animateWithDuration:.3 delay:0
                                 options:UIViewAnimationOptionCurveEaseInOut
             animations:^{
                 appDelegate.storyPageControl.traverseView.alpha = 0;
+                
+                if (traversalVisible) {
+                    [appDelegate.storyPageControl hideAutoscrollImmediately];
+                }
             } completion:^(BOOL finished) {
                 
             }];
-        } else if (singlePage) {
+        } else if (singlePage || !isHorizontal) {
             appDelegate.storyPageControl.traverseView.alpha = 1;
-            CGRect tvf = appDelegate.storyPageControl.traverseView.frame;
-            if (bottomPosition > 0) {
-                appDelegate.storyPageControl.traverseView.frame = CGRectMake(tvf.origin.x,
-                                                                             self.webView.scrollView.frame.size.height - tvf.size.height,
-                                                                             tvf.size.width, tvf.size.height);
+//            NSLog(@" ---> Bottom position: %d", bottomPosition);
+            if (bottomPosition >= 0 || !isHorizontal) {
+//                appDelegate.storyPageControl.traverseView.frame = CGRectMake(tvf.origin.x,
+//                                                                             self.webView.scrollView.frame.size.height - tvf.size.height - safeBottomMargin,
+//                                                                             tvf.size.width, tvf.size.height);
+                appDelegate.storyPageControl.traverseBottomConstraint.constant = safeBottomMargin;
             } else {
-                appDelegate.storyPageControl.traverseView.frame = CGRectMake(tvf.origin.x,
-                                                                             (self.webView.scrollView.contentSize.height - self.webView.scrollView.contentOffset.y) - tvf.size.height,
-                                                                             tvf.size.width, tvf.size.height);
+//                appDelegate.storyPageControl.traverseView.frame = CGRectMake(tvf.origin.x,
+//                                                                             (webpageHeight - topPosition) - tvf.size.height - safeBottomMargin,
+//                                                                             tvf.size.width, tvf.size.height);
+                if (webpageHeight > 0) {
+                    appDelegate.storyPageControl.traverseBottomConstraint.constant = viewportHeight - (webpageHeight - topPosition) + safeBottomMargin;
+                } else {
+                    appDelegate.storyPageControl.traverseBottomConstraint.constant = safeBottomMargin;
+                }
+//                appDelegate.storyPageControl.traverseBottomConstraint.constant = safeBottomMargin;
             }
         } else if (!singlePage && (atTop && !atBottom)) {
             // Pin to bottom of viewport, regardless of scrollview
             appDelegate.storyPageControl.traversePinned = YES;
             appDelegate.storyPageControl.traverseFloating = NO;
-            CGRect tvf = appDelegate.storyPageControl.traverseView.frame;
-            appDelegate.storyPageControl.traverseView.frame = CGRectMake(tvf.origin.x,
-                                                                         self.webView.scrollView.frame.size.height - tvf.size.height,
-                                                                         tvf.size.width, tvf.size.height);
+//            appDelegate.storyPageControl.traverseView.frame = CGRectMake(tvf.origin.x,
+//                                                                         self.webView.scrollView.frame.size.height - tvf.size.height - safeBottomMargin,
+//                                                                         tvf.size.width, tvf.size.height);
+            [appDelegate.storyPageControl.view layoutIfNeeded];
+
+            appDelegate.storyPageControl.traverseBottomConstraint.constant = safeBottomMargin;
             [UIView animateWithDuration:.3 delay:0
                                 options:UIViewAnimationOptionCurveEaseInOut
              animations:^{
+                 [appDelegate.storyPageControl.view layoutIfNeeded];
                 appDelegate.storyPageControl.traverseView.alpha = 1;
             } completion:nil];
         } else if (appDelegate.storyPageControl.traverseView.alpha == 1 &&
                    appDelegate.storyPageControl.traversePinned) {
             // Scroll with bottom of scrollview, but smoothly
             appDelegate.storyPageControl.traverseFloating = YES;
-            CGRect tvf = appDelegate.storyPageControl.traverseView.frame;
+            [appDelegate.storyPageControl.view layoutIfNeeded];
+
+            appDelegate.storyPageControl.traverseBottomConstraint.constant = safeBottomMargin;
             [UIView animateWithDuration:.3 delay:0
                                 options:UIViewAnimationOptionCurveEaseInOut
              animations:^{
-             appDelegate.storyPageControl.traverseView.frame = CGRectMake(tvf.origin.x,
-                                                                         (self.webView.scrollView.contentSize.height - self.webView.scrollView.contentOffset.y) - tvf.size.height,
-                                                                         tvf.size.width, tvf.size.height);
+//             appDelegate.storyPageControl.traverseView.frame = CGRectMake(tvf.origin.x,
+//                                                                         (webpageHeight - topPosition) - tvf.size.height - safeBottomMargin,
+//                                                                         tvf.size.width, tvf.size.height);
+                 [appDelegate.storyPageControl.view layoutIfNeeded];
              } completion:^(BOOL finished) {
-                 appDelegate.storyPageControl.traversePinned = NO;                 
+                 appDelegate.storyPageControl.traversePinned = NO;
              }];
         } else {
             // Scroll with bottom of scrollview
             appDelegate.storyPageControl.traversePinned = NO;
             appDelegate.storyPageControl.traverseFloating = YES;
             appDelegate.storyPageControl.traverseView.alpha = 1;
-            CGRect tvf = appDelegate.storyPageControl.traverseView.frame;
-            appDelegate.storyPageControl.traverseView.frame = CGRectMake(tvf.origin.x,
-                                                                         (self.webView.scrollView.contentSize.height - self.webView.scrollView.contentOffset.y) - tvf.size.height,
-                                                                         tvf.size.width, tvf.size.height);
+            appDelegate.storyPageControl.traverseBottomConstraint.constant = viewportHeight - (webpageHeight - topPosition) + safeBottomMargin;
+//            appDelegate.storyPageControl.traverseView.frame = CGRectMake(tvf.origin.x,
+//                                                                         (webpageHeight - topPosition) - tvf.size.height - safeBottomMargin,
+//                                                                         tvf.size.width, tvf.size.height);
         }
         
         [self storeScrollPosition:YES];
@@ -1329,6 +1476,7 @@
     __weak __typeof(&*self)weakSelf = self;
 
     if (position < 0) return;
+    if (!hasScrolled) return;
     
     NSString *storyIdentifier = [NSString stringWithFormat:@"markScrollPosition:%@", [story objectForKey:@"story_hash"]];
     if (queue) {
@@ -1366,24 +1514,24 @@
             while ([cursor next]) {
                 NSDictionary *story = [cursor resultDictionary];
                 id scroll = [story objectForKey:@"scroll"];
-                if ([scroll isKindOfClass:[NSNull class]] && !scrollPct) {
-                    NSLog(@"No scroll found for story: %@", [strongSelf.activeStory objectForKey:@"story_title"]);
+                if (([scroll isKindOfClass:[NSNull class]] || [scroll integerValue] == 0) && !scrollPct) {
+                    NSLog(@" ---> No scroll found for story: %@", [strongSelf.activeStory objectForKey:@"story_title"]);
                     // No scroll found
                     continue;
                 }
-                if (!scrollPct) scrollPct = [scroll floatValue] / 1000.f;
-                NSInteger position = floor(scrollPct * strongSelf.webView.scrollView.contentSize.height);
-                NSInteger maxPosition = (NSInteger)(floor(strongSelf.webView.scrollView.contentSize.height - strongSelf.webView.frame.size.height));
-                if (position > maxPosition) {
-                    NSLog(@"Position too far, scaling back to max position: %ld > %ld", (long)position, (long)maxPosition);
-                    position = maxPosition;
-                }
-                if (position > 0) {
-                    NSLog(@"Scrolling to %ld / %.1f%% (%.f+%.f) on %@-%@", (long)position, scrollPct*100, strongSelf.webView.scrollView.contentSize.height, strongSelf.webView.frame.size.height, [story objectForKey:@"story_hash"], [strongSelf.activeStory objectForKey:@"story_title"]);
-                    dispatch_async(dispatch_get_main_queue(), ^{
-                        [strongSelf.webView.scrollView setContentOffset:CGPointMake(0, position) animated:animated];
-                    });
-                }
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    if (!scrollPct) scrollPct = [scroll floatValue] / 1000.f;
+                    NSInteger position = floor(scrollPct * strongSelf.webView.scrollView.contentSize.height);
+                    NSInteger maxPosition = (NSInteger)(floor(strongSelf.webView.scrollView.contentSize.height - strongSelf.webView.frame.size.height));
+                    if (position > maxPosition) {
+                        NSLog(@"Position too far, scaling back to max position: %ld > %ld", (long)position, (long)maxPosition);
+                        position = maxPosition;
+                    }
+                    if (position > 0) {
+                        NSLog(@"Scrolling to %ld / %.1f%% (%.f+%.f) on %@-%@", (long)position, scrollPct*100, strongSelf.webView.scrollView.contentSize.height, strongSelf.webView.frame.size.height, [story objectForKey:@"story_hash"], [strongSelf.activeStory objectForKey:@"story_title"]);
+                            [strongSelf.webView.scrollView setContentOffset:CGPointMake(0, position) animated:animated];
+                    }
+                });
             }
             [cursor close];
             
@@ -1400,9 +1548,8 @@
     }
 }
 
-- (BOOL)webView:(UIWebView *)webView 
-shouldStartLoadWithRequest:(NSURLRequest *)request
- navigationType:(UIWebViewNavigationType)navigationType {
+- (void)webView:(WKWebView *)webView decidePolicyForNavigationAction:(WKNavigationAction *)navigationAction decisionHandler:(void (^)(WKNavigationActionPolicy))decisionHandler {
+    NSURLRequest *request = navigationAction.request;
     NSURL *url = [request URL];
     NSArray *urlComponents = [url pathComponents];
     NSString *action = @"";
@@ -1463,7 +1610,8 @@ shouldStartLoadWithRequest:(NSURLRequest *)request
             
             if (appDelegate.activeComment == nil) {
                 NSLog(@"PROBLEM! the active comment was not found in friend or public comments");
-                return NO;
+                decisionHandler(WKNavigationActionPolicyCancel);
+                return;
             }
             
             if ([action isEqualToString:@"reply"]) {
@@ -1486,16 +1634,28 @@ shouldStartLoadWithRequest:(NSURLRequest *)request
             } else if ([action isEqualToString:@"unlike-comment"]) {
                 [self toggleLikeComment:NO];
             }
-            return NO; 
+            decisionHandler(WKNavigationActionPolicyCancel);
+            return;
+        } else if ([action isEqualToString:@"togglechanges"]) {
+            if (self.activeStory[@"story_changes"] != nil) {
+                [self.activeStory removeObjectForKey:@"story_changes"];
+                [self drawStory];
+            } else {
+                [self fetchStoryChanges];
+            }
+            decisionHandler(WKNavigationActionPolicyCancel);
+            return;
         } else if ([action isEqualToString:@"share"]) {
             [self openShareDialog];
-            return NO;
+            decisionHandler(WKNavigationActionPolicyCancel);
+            return;
         } else if ([action isEqualToString:@"train"] && [urlComponents count] > 5) {
             [self openTrainingDialog:[[urlComponents objectAtIndex:2] intValue]
                          yCoordinate:[[urlComponents objectAtIndex:3] intValue]
                                width:[[urlComponents objectAtIndex:4] intValue]
                               height:[[urlComponents objectAtIndex:5] intValue]];
-            return NO;
+            decisionHandler(WKNavigationActionPolicyCancel);
+            return;
         } else if ([action isEqualToString:@"save"]) {
             BOOL isSaved = [appDelegate.storiesCollection toggleStorySaved:self.activeStory];
             if (isSaved) {
@@ -1504,21 +1664,29 @@ shouldStartLoadWithRequest:(NSURLRequest *)request
                                    width:[[urlComponents objectAtIndex:5] intValue]
                                   height:[[urlComponents objectAtIndex:6] intValue]];
             }
-            return NO;
+            decisionHandler(WKNavigationActionPolicyCancel);
+            return;
         } else if ([action isEqualToString:@"remove-user-tag"] || [action isEqualToString:@"add-user-tag"]) {
             [self openUserTagsDialog:[[urlComponents objectAtIndex:3] intValue]
                          yCoordinate:[[urlComponents objectAtIndex:4] intValue]
                                width:[[urlComponents objectAtIndex:5] intValue]
                               height:[[urlComponents objectAtIndex:6] intValue]];
-            return NO;
+            decisionHandler(WKNavigationActionPolicyCancel);
+            return;
         } else if ([action isEqualToString:@"classify-author"]) {
             NSString *author = [NSString stringWithFormat:@"%@", [urlComponents objectAtIndex:2]];
             [self.appDelegate toggleAuthorClassifier:author feedId:feedId];
-            return NO;
+            decisionHandler(WKNavigationActionPolicyCancel);
+            return;
         } else if ([action isEqualToString:@"classify-tag"]) {
             NSString *tag = [NSString stringWithFormat:@"%@", [urlComponents objectAtIndex:2]];
             [self.appDelegate toggleTagClassifier:tag feedId:feedId];
-            return NO;
+            decisionHandler(WKNavigationActionPolicyCancel);
+            return;
+        } else if ([action isEqualToString:@"premium"]) {
+            [self.appDelegate showPremiumDialog];
+            decisionHandler(WKNavigationActionPolicyCancel);
+            return;
         } else if ([action isEqualToString:@"show-profile"] && [urlComponents count] > 6) {
             appDelegate.activeUserProfileId = [NSString stringWithFormat:@"%@", [urlComponents objectAtIndex:2]];
                         
@@ -1536,21 +1704,31 @@ shouldStartLoadWithRequest:(NSURLRequest *)request
                       yCoordinate:[[urlComponents objectAtIndex:4] intValue] 
                             width:[[urlComponents objectAtIndex:5] intValue] 
                            height:[[urlComponents objectAtIndex:6] intValue]];
-            return NO; 
+            decisionHandler(WKNavigationActionPolicyCancel);
+            return;
+        } else if ([action isEqualToString:@"notify-loaded"]) {
+            [self webViewNotifyLoaded];
+            decisionHandler(WKNavigationActionPolicyCancel);
+            return;
         }
     } else if ([url.host hasSuffix:@"itunes.apple.com"]) {
         [[UIApplication sharedApplication] openURL:url options:@{} completionHandler:nil];
-        return NO;
+        decisionHandler(WKNavigationActionPolicyCancel);
+        return;
     }
     
-    if (navigationType == UIWebViewNavigationTypeLinkClicked) {
+    if (navigationAction.navigationType == WKNavigationTypeLinkActivated) {
 //        NSLog(@"Link clicked, views: %@ = %@", appDelegate.navigationController.topViewController, appDelegate.masterContainerViewController.childViewControllers);
-        if (appDelegate.isPresentingActivities) return NO;        
+        if (appDelegate.isPresentingActivities) {
+            decisionHandler(WKNavigationActionPolicyCancel);
+            return;
+        }
         [appDelegate showOriginalStory:url];
-        return NO;
+        decisionHandler(WKNavigationActionPolicyCancel);
+        return;
     }
     
-    return YES;
+    decisionHandler(WKNavigationActionPolicyAllow);
 }
 
 - (void)showOriginalStory:(UIGestureRecognizer *)gesture {
@@ -1606,7 +1784,7 @@ shouldStartLoadWithRequest:(NSURLRequest *)request
     [appDelegate showUserProfileModal:[NSValue valueWithCGRect:frame]];
 }
 
-- (void)webViewDidStartLoad:(UIWebView *)webView {
+- (void)webView:(WKWebView *)webView didStartProvisionalNavigation:(WKNavigation *)navigation {
     if (!self.hasStory) // other Web page loads aren't visible
         return;
 
@@ -1614,33 +1792,41 @@ shouldStartLoadWithRequest:(NSURLRequest *)request
     NSUserDefaults *userPreferences = [NSUserDefaults standardUserDefaults];
     [self changeFontSize:[userPreferences stringForKey:@"story_font_size"]];
     [self changeLineSpacing:[userPreferences stringForKey:@"story_line_spacing"]];
-    [self.webView stringByEvaluatingJavaScriptFromString:@"document.body.style.webkitTouchCallout='none';"];
+    [self.webView evaluateJavaScript:@"document.body.style.webkitTouchCallout='none';" completionHandler:nil];
 }
 
-- (void)webViewDidFinishLoad:(UIWebView *)webView {
-    [self.activityIndicator stopAnimating];
+- (void)webView:(WKWebView *)webView didFinishNavigation:(WKNavigation *)navigation {
+    [self loadStory];
+}
 
+- (void)loadStory {
     if (!self.fullStoryHTML)
         return; // if we're loading anything other than a full story, the view will be hidden
+    
+    [self.activityIndicator stopAnimating];
     
     [self loadHTMLString:self.fullStoryHTML];
     self.fullStoryHTML = nil;
     self.hasStory = YES;
     
     [MBProgressHUD hideHUDForView:self.view animated:YES];
-
+    
     if ([appDelegate.storiesCollection.activeFeedStories count] &&
         self.activeStoryId) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, .15 * NSEC_PER_SEC),
                        dispatch_get_main_queue(), ^{
-            [self checkTryFeedStory];
-        });
+                           [self checkTryFeedStory];
+                       });
     }
+    
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        self.webView.hidden = NO;
+        [self.webView setNeedsDisplay];
+    });
+}
 
+- (void)webViewNotifyLoaded {
     [self scrollToLastPosition:YES];
-
-    self.webView.hidden = NO;
-    [self.webView setNeedsDisplay];
 }
 
 - (void)checkTryFeedStory {
@@ -1655,12 +1841,12 @@ shouldStartLoadWithRequest:(NSURLRequest *)request
             [appDelegate.tryFeedCategory isEqualToString:@"comment_reply"]) {
             NSString *currentUserId = [NSString stringWithFormat:@"%@", [appDelegate.dictSocialProfile objectForKey:@"user_id"]];
             NSString *jsFlashString = [[NSString alloc] initWithFormat:@"slideToComment('%@', true, true);", currentUserId];
-            [self.webView stringByEvaluatingJavaScriptFromString:jsFlashString];
+            [self.webView evaluateJavaScript:jsFlashString completionHandler:nil];
         } else if ([appDelegate.tryFeedCategory isEqualToString:@"story_reshare"] ||
                    [appDelegate.tryFeedCategory isEqualToString:@"reply_reply"]) {
             NSString *blurblogUserId = [NSString stringWithFormat:@"%@", [self.activeStory objectForKey:@"social_user_id"]];
             NSString *jsFlashString = [[NSString alloc] initWithFormat:@"slideToComment('%@', true, true);", blurblogUserId];
-            [self.webView stringByEvaluatingJavaScriptFromString:jsFlashString];
+            [self.webView evaluateJavaScript:jsFlashString completionHandler:nil];
         }
         appDelegate.tryFeedCategory = nil;
     }
@@ -1677,7 +1863,7 @@ shouldStartLoadWithRequest:(NSURLRequest *)request
                 "document.getElementById('NB-font-style').setAttribute('class', '%@')",
                 fontStyle];
     
-    [self.webView stringByEvaluatingJavaScriptFromString:jsString];
+    [self.webView evaluateJavaScript:jsString completionHandler:nil];
     
     if (![fontStyle hasPrefix:@"NB-"]) {
         jsString = [NSString stringWithFormat:@
@@ -1687,21 +1873,54 @@ shouldStartLoadWithRequest:(NSURLRequest *)request
         jsString = @"document.getElementById('NB-font-style').setAttribute('style', '')";
     }
     
-    [self.webView stringByEvaluatingJavaScriptFromString:jsString];
+    [self.webView evaluateJavaScript:jsString completionHandler:nil];
 }
 
 - (void)changeFontSize:(NSString *)fontSize {
     NSString *jsString = [[NSString alloc] initWithFormat:@"document.getElementById('NB-font-size').setAttribute('class', 'NB-%@')",
                           fontSize];
     
-    [self.webView stringByEvaluatingJavaScriptFromString:jsString];
+    [self.webView evaluateJavaScript:jsString completionHandler:nil];
 }
 
 - (void)changeLineSpacing:(NSString *)lineSpacing {
     NSString *jsString = [[NSString alloc] initWithFormat:@"document.getElementById('NB-line-spacing').setAttribute('class', 'NB-line-spacing-%@')",
                           lineSpacing];
     
-    [self.webView stringByEvaluatingJavaScriptFromString:jsString];
+    [self.webView evaluateJavaScript:jsString completionHandler:nil];
+}
+
+- (void)updateStoryTheme {
+    NSString *jsString = [NSString stringWithFormat:@"document.getElementById('NB-theme-style').href='storyDetailView%@.css';",
+                          [ThemeManager themeManager].themeCSSSuffix];
+    
+    [self.webView evaluateJavaScript:jsString completionHandler:nil];
+    
+    self.webView.backgroundColor = UIColorFromLightDarkRGB(0x707070, 0x404040);
+}
+
+- (BOOL)canHideNavigationBar {
+    if (UI_USER_INTERFACE_IDIOM() != UIUserInterfaceIdiomPhone || self.presentedViewController != nil) {
+        return NO;
+    }
+    
+    if (!appDelegate.storyPageControl.wantNavigationBarHidden) {
+        NSLog(@"canHideNavigationBar: no, toggle is off");  // log
+        return NO;
+    }
+    
+    BOOL canHide = !self.isSinglePage;
+    
+    NSLog(@"canHideNavigationBar: %@", canHide ? @"yes" : @"no");  // log
+    
+    return canHide;
+}
+
+- (BOOL)isSinglePage {
+    NSInteger webpageHeight = self.webView.scrollView.contentSize.height;
+    NSInteger viewportHeight = self.view.frame.size.height;
+    
+    return webpageHeight - 200 <= viewportHeight;
 }
 
 #pragma mark -
@@ -1723,7 +1942,7 @@ shouldStartLoadWithRequest:(NSURLRequest *)request
     [params setObject:[self.activeStory objectForKey:@"story_feed_id"] forKey:@"story_feed_id"];
     [params setObject:[appDelegate.activeComment objectForKey:@"user_id"] forKey:@"comment_user_id"];
     
-    [appDelegate.networkManager POST:urlString parameters:params progress:nil success:^(NSURLSessionDataTask * _Nonnull task, id  _Nullable responseObject) {
+    [appDelegate POST:urlString parameters:params success:^(NSURLSessionDataTask * _Nonnull task, id  _Nullable responseObject) {
         [self finishLikeComment:responseObject];
     } failure:^(NSURLSessionDataTask * _Nullable task, NSError * _Nonnull error) {
         NSHTTPURLResponse *httpResponse = (NSHTTPURLResponse *)task.response;
@@ -1847,91 +2066,82 @@ shouldStartLoadWithRequest:(NSURLRequest *)request
     CGPoint pt = [self pointForGesture:gestureRecognizer];
     if (pt.x == CGPointZero.x && pt.y == CGPointZero.y) return;
 //    NSLog(@"Tapped point: %@", NSStringFromCGPoint(pt));
-    NSString *tagName = [webView stringByEvaluatingJavaScriptFromString:
-                         [NSString stringWithFormat:@"linkAt(%li, %li, 'tagName');",
-                          (long)pt.x,(long)pt.y]];
-    
-    if ([tagName isEqualToString:@"IMG"]) {
-        [self showImageMenu:pt];
-        [gestureRecognizer setEnabled:NO];
-        [gestureRecognizer setEnabled:YES];
-    }
+    [webView evaluateJavaScript:[NSString stringWithFormat:@"linkAt(%li, %li, 'tagName');", (long)pt.x,(long)pt.y] completionHandler:^(NSString *tagName, NSError *error) {
+        if ([tagName isEqualToString:@"IMG"]) {
+            [self showImageMenu:pt];
+            [gestureRecognizer setEnabled:NO];
+            [gestureRecognizer setEnabled:YES];
+        }
+    }];
 }
 
 - (void)tapAndHold:(NSNotification*)notification {
     CGPoint pt = [self pointForEvent:notification];
     if (pt.x == CGPointZero.x && pt.y == CGPointZero.y) return;
     
-    NSString *tagName = [webView stringByEvaluatingJavaScriptFromString:
-                         [NSString stringWithFormat:@"linkAt(%li, %li, 'tagName');",
-                          (long)pt.x,(long)pt.y]];
-    
-    if ([tagName isEqualToString:@"IMG"]) {
-        [self showImageMenu:pt];
-    }
-    
-    if ([tagName isEqualToString:@"A"]) {
-//        [self showLinkContextMenu:pt];
-    }
+    [webView evaluateJavaScript:[NSString stringWithFormat:@"linkAt(%li, %li, 'tagName');", (long)pt.x,(long)pt.y] completionHandler:^(NSString *tagName, NSError *error) {
+        if ([tagName isEqualToString:@"IMG"]) {
+            [self showImageMenu:pt];
+        }
+        
+        if ([tagName isEqualToString:@"A"]) {
+    //        [self showLinkContextMenu:pt];
+        }
+    }];
 }
 
 - (void)showImageMenu:(CGPoint)pt {
-    NSString *title = [webView stringByEvaluatingJavaScriptFromString:
-                       [NSString stringWithFormat:@"linkAt(%li, %li, 'title');",
-                        (long)pt.x,(long)pt.y]];
-    NSString *alt = [webView stringByEvaluatingJavaScriptFromString:
-                     [NSString stringWithFormat:@"linkAt(%li, %li, 'alt');",
-                      (long)pt.x,(long)pt.y]];
-    NSString *src = [webView stringByEvaluatingJavaScriptFromString:
-                     [NSString stringWithFormat:@"linkAt(%li, %li, 'src');",
-                      (long)pt.x,(long)pt.y]];
-    title = title.length ? title : alt;
-    activeLongPressUrl = [NSURL URLWithString:src];
-    
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:title.length ? title : nil
-                                                                   message:nil
-                                                            preferredStyle:UIAlertControllerStyleActionSheet];
-    [alert addAction:[UIAlertAction actionWithTitle:@"View and zoom" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-        [appDelegate showOriginalStory:activeLongPressUrl];
-    }]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"Copy image" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-        [self fetchImage:activeLongPressUrl copy:YES save:NO];
-    }]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"Save to camera roll" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-        [self fetchImage:activeLongPressUrl copy:NO save:YES];
-    }]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:^(UIAlertAction * _Nonnull action) {
-        
-    }]];
-    
-    [alert setModalPresentationStyle:UIModalPresentationPopover];
-    
-    UIPopoverPresentationController *popover = [alert popoverPresentationController];
-    popover.sourceRect = CGRectMake(pt.x, pt.y, 1, 1);
-    popover.sourceView = appDelegate.storyPageControl.view;
-    [self presentViewController:alert animated:YES completion:nil];
+    [webView evaluateJavaScript:[NSString stringWithFormat:@"linkAt(%li, %li, 'title');", (long)pt.x,(long)pt.y] completionHandler:^(NSString *title, NSError *error) {
+        [webView evaluateJavaScript:[NSString stringWithFormat:@"linkAt(%li, %li, 'alt');", (long)pt.x,(long)pt.y] completionHandler:^(NSString *alt, NSError *error) {
+            [webView evaluateJavaScript:[NSString stringWithFormat:@"linkAt(%li, %li, 'src');", (long)pt.x,(long)pt.y] completionHandler:^(NSString *src, NSError * error) {
+                NSString *alertTitle = title.length ? title : alt;
+                activeLongPressUrl = [NSURL URLWithString:src];
+                
+                UIAlertController *alert = [UIAlertController alertControllerWithTitle:alertTitle.length ? alertTitle : nil
+                                                                               message:nil
+                                                                        preferredStyle:UIAlertControllerStyleActionSheet];
+                [alert addAction:[UIAlertAction actionWithTitle:@"View and zoom" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+                    [appDelegate showOriginalStory:activeLongPressUrl];
+                }]];
+                [alert addAction:[UIAlertAction actionWithTitle:@"Copy image" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+                    [self fetchImage:activeLongPressUrl copy:YES save:NO];
+                }]];
+                [alert addAction:[UIAlertAction actionWithTitle:@"Save to camera roll" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+                    [self fetchImage:activeLongPressUrl copy:NO save:YES];
+                }]];
+                [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:^(UIAlertAction * _Nonnull action) {
+                    
+                }]];
+                
+                [alert setModalPresentationStyle:UIModalPresentationPopover];
+                
+                UIPopoverPresentationController *popover = [alert popoverPresentationController];
+                popover.sourceRect = CGRectMake(pt.x, pt.y, 1, 1);
+                popover.sourceView = appDelegate.storyPageControl.view;
+                [self presentViewController:alert animated:YES completion:nil];
+            }];
+        }];
+    }];
 }
 
 - (void)showLinkContextMenu:(CGPoint)pt {
-    NSString *href = [webView stringByEvaluatingJavaScriptFromString:
-                      [NSString stringWithFormat:@"linkAt(%li, %li, 'href');",
-                       (long)pt.x,(long)pt.y]];
-    NSString *title = [webView stringByEvaluatingJavaScriptFromString:
-                       [NSString stringWithFormat:@"linkAt(%li, %li, 'innerText');",
-                        (long)pt.x,(long)pt.y]];
-    NSURL *url = [NSURL URLWithString:href];
-    
-    if (!href || ![href length]) return;
-    
-    NSValue *ptValue = [NSValue valueWithCGPoint:pt];
-    [appDelegate showSendTo:appDelegate.storyPageControl
-                     sender:ptValue
-                    withUrl:url
-                 authorName:nil
-                       text:nil
-                      title:title
-                  feedTitle:nil
-                     images:nil];
+    [webView evaluateJavaScript:[NSString stringWithFormat:@"linkAt(%li, %li, 'href');", (long)pt.x,(long)pt.y] completionHandler:^(NSString *href, NSError *error) {
+        [webView evaluateJavaScript:[NSString stringWithFormat:@"linkAt(%li, %li, 'innerText');", (long)pt.x,(long)pt.y] completionHandler:^(NSString *title, NSError *error) {
+            NSURL *url = [NSURL URLWithString:href];
+            
+            if (!href || ![href length]) return;
+            
+            NSValue *ptValue = [NSValue valueWithCGPoint:pt];
+            [appDelegate showSendTo:appDelegate.storyPageControl
+                             sender:ptValue
+                            withUrl:url
+                         authorName:nil
+                               text:nil
+                              title:title
+                          feedTitle:nil
+                             images:nil];
+        }];
+    }];
 }
 
 - (CGPoint)pointForEvent:(NSNotification*)notification {
@@ -1948,12 +2158,14 @@ shouldStartLoadWithRequest:(NSURLRequest *)request
     
     // convert point from view to HTML coordinate system
     //    CGPoint offset  = [self.webView scrollOffset];
-    CGSize viewSize = [self.webView frame].size;
-    CGSize windowSize = [self.webView windowSize];
     
-    CGFloat f = windowSize.width / viewSize.width;
-    pt.x = pt.x * f;// + offset.x;
-    pt.y = pt.y * f;// + offset.y;
+    // The viewSize seems to always match the windowSize, so don't need this. If there is some case where it is needed, will need to cache it, as the old windowSize method would be async with WKWebView
+//    CGSize viewSize = [self.webView frame].size;
+//    CGSize windowSize = [self.webView windowSize];
+//
+//    CGFloat f = windowSize.width / viewSize.width;
+//    pt.x = pt.x * f;// + offset.x;
+//    pt.y = pt.y * f;// + offset.y;
     
     return pt;
 }
@@ -1966,12 +2178,13 @@ shouldStartLoadWithRequest:(NSURLRequest *)request
     
     // convert point from view to HTML coordinate system
 //    CGPoint offset  = [self.webView scrollOffset];
-    CGSize viewSize = [self.webView frame].size;
-    CGSize windowSize = [self.webView windowSize];
-    
-    CGFloat f = windowSize.width / viewSize.width;
-    pt.x = pt.x * f;// + offset.x;
-    pt.y = pt.y * f;// + offset.y;
+    // The viewSize seems to always match the windowSize, so don't need this. If there is some case where it is needed, will need to cache it, as the old windowSize method would be async with WKWebView
+//    CGSize viewSize = [self.webView frame].size;
+//    CGSize windowSize = [self.webView windowSize];
+//
+//    CGFloat f = windowSize.width / viewSize.width;
+//    pt.x = pt.x * f;// + offset.x;
+//    pt.y = pt.y * f;// + offset.y;
     
     return pt;
 }
@@ -1988,8 +2201,7 @@ shouldStartLoadWithRequest:(NSURLRequest *)request
         if (copy) {
             [UIPasteboard generalPasteboard].image = image;
             [self flashCheckmarkHud:@"copied"];
-        }
-        if (save) {
+        } else if (save) {
             [[PHPhotoLibrary sharedPhotoLibrary] performChanges:^{
                 PHAssetChangeRequest *changeRequest = [PHAssetChangeRequest creationRequestForAssetFromImage:image];
                 changeRequest.creationDate = [NSDate date];
@@ -2028,7 +2240,7 @@ shouldStartLoadWithRequest:(NSURLRequest *)request
                            objectForKey:@"user_id"] 
                    forKey:@"user_id"];
 
-    [appDelegate.networkManager POST:urlString parameters:params progress:nil success:^(NSURLSessionDataTask * _Nonnull task, id  _Nullable responseObject) {
+    [appDelegate POST:urlString parameters:params success:^(NSURLSessionDataTask * _Nonnull task, id  _Nullable responseObject) {
         [self finishSubscribeToBlurblog:responseObject];
     } failure:^(NSURLSessionDataTask * _Nullable task, NSError * _Nonnull error) {
         NSHTTPURLResponse *httpResponse = (NSHTTPURLResponse *)task.response;
@@ -2058,38 +2270,38 @@ shouldStartLoadWithRequest:(NSURLRequest *)request
                           commentString, 
                           shareBarString];
     NSString *shareType = appDelegate.activeShareType;
-    [self.webView stringByEvaluatingJavaScriptFromString:jsString];
-    
-    [self.webView stringByEvaluatingJavaScriptFromString:@"attachFastClick();"];
-
-    // HACK to make the scroll event happen after the replace innerHTML event above happens.
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, .15 * NSEC_PER_SEC),
-                   dispatch_get_main_queue(), ^{
-        if (!replyId) {
-            NSString *currentUserId = [NSString stringWithFormat:@"%@",
-                                       [appDelegate.dictSocialProfile objectForKey:@"user_id"]];
-            NSString *jsFlashString = [[NSString alloc]
-                                       initWithFormat:@"slideToComment('%@', true);", currentUserId];
-            [self.webView stringByEvaluatingJavaScriptFromString:jsFlashString];
-        } else if ([replyId isEqualToString:@"like"]) {
-            
-        } else {
-            NSString *jsFlashString = [[NSString alloc]
-                                       initWithFormat:@"slideToComment('%@', true);", replyId];
-            [self.webView stringByEvaluatingJavaScriptFromString:jsFlashString];
-        }
-    });
-        
-
-//    // adding in a simulated delay
-//    sleep(1);
-    
-    [self flashCheckmarkHud:shareType];
-    [self refreshSideoptions];
+    [self.webView evaluateJavaScript:jsString completionHandler:^(id result, NSError * _Nullable error) {
+        [self.webView evaluateJavaScript:@"attachFastClick();" completionHandler:^(id result, NSError * _Nullable error) {
+            // HACK to make the scroll event happen after the replace innerHTML event above happens.
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, .15 * NSEC_PER_SEC),
+                           dispatch_get_main_queue(), ^{
+                if (!replyId) {
+                    NSString *currentUserId = [NSString stringWithFormat:@"%@",
+                                               [appDelegate.dictSocialProfile objectForKey:@"user_id"]];
+                    NSString *jsFlashString = [[NSString alloc]
+                                               initWithFormat:@"slideToComment('%@', true);", currentUserId];
+                    [self.webView evaluateJavaScript:jsFlashString completionHandler:^(id result, NSError * _Nullable error) {
+                        [self flashCheckmarkHud:shareType];
+                        [self refreshSideoptions];
+                    }];
+                } else if ([replyId isEqualToString:@"like"]) {
+                    
+                } else {
+                    NSString *jsFlashString = [[NSString alloc]
+                                               initWithFormat:@"slideToComment('%@', true);", replyId];
+                    [self.webView evaluateJavaScript:jsFlashString completionHandler:^(id result, NSError * _Nullable error) {
+                        [self flashCheckmarkHud:shareType];
+                        [self refreshSideoptions];
+                    }];
+                }
+            });
+        }];
+    }];
 }
 
 - (void)flashCheckmarkHud:(NSString *)messageType {
     [MBProgressHUD hideHUDForView:self.webView animated:NO];
+    [MBProgressHUD hideHUDForView:appDelegate.storyPageControl.currentPage.view animated:NO];
     self.storyHUD = [MBProgressHUD showHUDAddedTo:self.webView animated:YES];
     self.storyHUD.customView = [[UIImageView alloc] initWithImage:[UIImage imageNamed:@"37x-Checkmark.png"]];
     self.storyHUD.mode = MBProgressHUDModeCustomView;
@@ -2129,7 +2341,7 @@ shouldStartLoadWithRequest:(NSURLRequest *)request
 - (void)scrolltoComment {
     NSString *currentUserId = [NSString stringWithFormat:@"%@", [appDelegate.dictSocialProfile objectForKey:@"user_id"]];
     NSString *jsFlashString = [[NSString alloc] initWithFormat:@"slideToComment('%@', true);", currentUserId];
-    [self.webView stringByEvaluatingJavaScriptFromString:jsFlashString];
+    [self.webView evaluateJavaScript:jsFlashString completionHandler:nil];
 }
 
 - (void)tryScrollingDown:(BOOL)down {
@@ -2180,14 +2392,18 @@ shouldStartLoadWithRequest:(NSURLRequest *)request
     NSString *contentWidthClass;
 
     if (UIInterfaceOrientationIsLandscape(orientation) && !self.isPhoneOrCompact) {
-        if (iPadPro) {
-            contentWidthClass = @"NB-ipad-wide NB-ipad-pro-wide";
+        if (iPadPro12) {
+            contentWidthClass = @"NB-ipad-wide NB-ipad-pro-12-wide";
+        } else if (iPadPro10) {
+            contentWidthClass = @"NB-ipad-wide NB-ipad-pro-10-wide";
         } else {
             contentWidthClass = @"NB-ipad-wide";
         }
     } else if (!UIInterfaceOrientationIsLandscape(orientation) && !self.isPhoneOrCompact) {
-        if (iPadPro) {
-            contentWidthClass = @"NB-ipad-narrow NB-ipad-pro-narrow";
+        if (iPadPro12) {
+            contentWidthClass = @"NB-ipad-narrow NB-ipad-pro-12-narrow";
+        } else if (iPadPro10) {
+            contentWidthClass = @"NB-ipad-narrow NB-ipad-pro-10-narrow";
         } else {
             contentWidthClass = @"NB-ipad-narrow";
         }
@@ -2222,7 +2438,7 @@ shouldStartLoadWithRequest:(NSURLRequest *)request
                           alternateViewClass,
                           riverClass,
                           (long)contentWidth];
-    [self.webView stringByEvaluatingJavaScriptFromString:jsString];
+    [self.webView evaluateJavaScript:jsString completionHandler:nil];
     
 //    self.webView.hidden = NO;
 }
@@ -2233,9 +2449,9 @@ shouldStartLoadWithRequest:(NSURLRequest *)request
     NSString *jsString = [NSString stringWithFormat:@"document.getElementById('NB-header-container').innerHTML = '%@';",
                           headerString];
     
-    [self.webView stringByEvaluatingJavaScriptFromString:jsString];
-    
-    [self.webView stringByEvaluatingJavaScriptFromString:@"attachFastClick();"];
+    [self.webView evaluateJavaScript:jsString completionHandler:^(id result, NSError *error) {
+        [self.webView evaluateJavaScript:@"attachFastClick();" completionHandler:nil];
+    }];
 }
 
 - (void)refreshSideoptions {
@@ -2244,9 +2460,9 @@ shouldStartLoadWithRequest:(NSURLRequest *)request
     NSString *jsString = [NSString stringWithFormat:@"document.getElementById('NB-sideoptions-container').innerHTML = '%@';",
                           sideoptionsString];
     
-    [self.webView stringByEvaluatingJavaScriptFromString:jsString];
-    
-    [self.webView stringByEvaluatingJavaScriptFromString:@"attachFastClick();"];
+    [self.webView evaluateJavaScript:jsString completionHandler:^(id result, NSError *error) {
+        [self.webView evaluateJavaScript:@"attachFastClick();" completionHandler:nil];
+    }];
 }
 
 #pragma mark -
@@ -2285,25 +2501,20 @@ shouldStartLoadWithRequest:(NSURLRequest *)request
     self.inTextView = YES;
 //    NSLog(@"Fetching Text: %@", [self.activeStory objectForKey:@"story_title"]);
     if (self.activeStory == appDelegate.storyPageControl.currentPage.activeStory) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [self.appDelegate.storyPageControl showFetchingTextNotifier];
-        });
+        [self.appDelegate.storyPageControl showFetchingTextNotifier];
     }
-    
-    NSString *urlString = [NSString stringWithFormat:@"%@/rss_feeds/original_text",
-                           self.appDelegate.url];
-    NSMutableDictionary *params = [NSMutableDictionary dictionary];
-    [params setObject:[self.activeStory objectForKey:@"id"] forKey:@"story_id"];
-    [params setObject:[self.activeStory objectForKey:@"story_feed_id"] forKey:@"feed_id"];
     NSString *storyId = [self.activeStory objectForKey:@"id"];
-    [appDelegate.networkManager POST:urlString parameters:params progress:nil success:^(NSURLSessionDataTask * _Nonnull task, id  _Nullable responseObject) {
-        [self finishFetchTextView:responseObject storyId:storyId];
-    } failure:^(NSURLSessionDataTask * _Nullable task, NSError * _Nonnull error) {
-        [self failedFetchText:error];
+    
+    [appDelegate fetchTextForStory:[self.activeStory objectForKey:@"story_hash"] inFeed:[self.activeStory objectForKey:@"story_feed_id"] checkCache:YES withCallback:^(NSString *text) {
+        if (text != nil) {
+            [self finishFetchText:text storyId:storyId];
+        } else {
+            [self failedFetchText];
+        }
     }];
 }
 
-- (void)failedFetchText:(NSError *)error {
+- (void)failedFetchText {
     [self.appDelegate.storyPageControl hideNotifier];
     [MBProgressHUD hideHUDForView:self.webView animated:YES];
     if (self.activeStory == appDelegate.storyPageControl.currentPage.activeStory) {
@@ -2313,12 +2524,7 @@ shouldStartLoadWithRequest:(NSURLRequest *)request
     [appDelegate.storyPageControl setTextButton:self];
 }
 
-- (void)finishFetchTextView:(NSDictionary *)results storyId:(NSString *)storyId {
-    if ([[results objectForKey:@"failed"] boolValue]) {
-        [self failedFetchText:nil];
-        return;
-    }
-    
+- (void)finishFetchText:(NSString *)text storyId:(NSString *)storyId {
     if (![storyId isEqualToString:[self.activeStory objectForKey:@"id"]]) {
         [self.appDelegate.storyPageControl hideNotifier];
         [MBProgressHUD hideHUDForView:self.webView animated:YES];
@@ -2328,7 +2534,7 @@ shouldStartLoadWithRequest:(NSURLRequest *)request
     }
     
     NSMutableDictionary *newActiveStory = [self.activeStory mutableCopy];
-    [newActiveStory setObject:[results objectForKey:@"original_text"] forKey:@"original_text"];
+    [newActiveStory setObject:text forKey:@"original_text"];
     if ([[self.activeStory objectForKey:@"story_hash"] isEqualToString:[appDelegate.activeStory objectForKey:@"story_hash"]]) {
         appDelegate.activeStory = newActiveStory;
     }
@@ -2344,5 +2550,69 @@ shouldStartLoadWithRequest:(NSURLRequest *)request
 //    NSLog(@"Fetched Text: %@", [self.activeStory objectForKey:@"story_title"]);
 }
 
+- (void)fetchStoryChanges {
+    if (!self.activeStoryId || !self.activeStory) return;
+    self.inTextView = YES;
+//    NSLog(@"Fetching Changes: %@", [self.activeStory objectForKey:@"story_title"]);
+    if (self.activeStory == appDelegate.storyPageControl.currentPage.activeStory) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self.appDelegate.storyPageControl showFetchingTextNotifier];
+        });
+    }
+    
+    NSString *urlString = [NSString stringWithFormat:@"%@/rss_feeds/story_changes",
+                           self.appDelegate.url];
+    NSMutableDictionary *params = [NSMutableDictionary dictionary];
+    [params setObject:[self.activeStory objectForKey:@"story_hash"] forKey:@"story_hash"];
+    [params setObject:@"true" forKey:@"show_changes"];
+    NSString *storyId = [self.activeStory objectForKey:@"id"];
+    [appDelegate POST:urlString parameters:params success:^(NSURLSessionDataTask * _Nonnull task, id  _Nullable responseObject) {
+        [self finishFetchStoryChanges:responseObject storyId:storyId];
+    } failure:^(NSURLSessionDataTask * _Nullable task, NSError * _Nonnull error) {
+        [self failedFetchStoryChanges:error];
+    }];
+}
+
+- (void)failedFetchStoryChanges:(NSError *)error {
+    [self.appDelegate.storyPageControl hideNotifier];
+    [MBProgressHUD hideHUDForView:self.webView animated:YES];
+    if (self.activeStory == appDelegate.storyPageControl.currentPage.activeStory) {
+        [self informError:@"Could not fetch changes"];
+    }
+    self.inTextView = NO;
+    [appDelegate.storyPageControl setTextButton:self];
+}
+
+- (void)finishFetchStoryChanges:(NSDictionary *)results storyId:(NSString *)storyId {
+    if ([results[@"failed"] boolValue]) {
+        [self failedFetchText];
+        return;
+    }
+    
+    if (![storyId isEqualToString:self.activeStory[@"id"]]) {
+        [self.appDelegate.storyPageControl hideNotifier];
+        [MBProgressHUD hideHUDForView:self.webView animated:YES];
+        self.inTextView = NO;
+        [appDelegate.storyPageControl setTextButton:self];
+        return;
+    }
+    
+    NSMutableDictionary *newActiveStory = [self.activeStory mutableCopy];
+    NSDictionary *resultsStory = results[@"story"];
+    newActiveStory[@"story_changes"] = resultsStory[@"story_content"];
+    if ([self.activeStory[@"story_hash"] isEqualToString:appDelegate.activeStory[@"story_hash"]]) {
+        appDelegate.activeStory = newActiveStory;
+    }
+    self.activeStory = newActiveStory;
+    
+    [self.appDelegate.storyPageControl hideNotifier];
+    [MBProgressHUD hideHUDForView:self.webView animated:YES];
+    
+    self.inTextView = YES;
+    
+    [self drawStory];
+    
+//    NSLog(@"Fetched Changes: %@", self.activeStory[@"story_title"]);
+}
 
 @end

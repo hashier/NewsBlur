@@ -33,7 +33,7 @@ const int COUNT_HEIGHT = 15;
 }
 
 - (void)drawInRect:(CGRect)r ps:(NSInteger)ps nt:(NSInteger)nt listType:(NBFeedListType)listType {
-    rect = CGRectInset(r, 12, 12);
+    rect = CGRectInset(r, 12, 0);
     rect.size.width -= 18; // Scrollbar padding
     
     if (listType == NBFeedListSaved || (listType == NBFeedListFolder && self.blueCount)) {
@@ -55,14 +55,14 @@ const int COUNT_HEIGHT = 15;
         
         if (listType == NBFeedListSocial) {
             if (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPad) {
-                rr = CGRectMake(rect.size.width + rect.origin.x - psOffset, 7, psWidth, COUNT_HEIGHT);
+                rr = CGRectMake(rect.size.width + rect.origin.x - psOffset, CGRectGetMidY(r)-COUNT_HEIGHT/2-1, psWidth, COUNT_HEIGHT);
             } else {
-                rr = CGRectMake(rect.size.width + rect.origin.x - psOffset, 7, psWidth, COUNT_HEIGHT);
+                rr = CGRectMake(rect.size.width + rect.origin.x - psOffset, CGRectGetMidY(r)-COUNT_HEIGHT/2-1, psWidth, COUNT_HEIGHT);
             }
         } else if (listType == NBFeedListFolder) {
-            rr = CGRectMake(rect.size.width + rect.origin.x - psOffset - 22, 8, psWidth, COUNT_HEIGHT);
+            rr = CGRectMake(rect.size.width + rect.origin.x - psOffset - 22, CGRectGetMidY(r)-COUNT_HEIGHT/2-2, psWidth, COUNT_HEIGHT);
         } else {
-            rr = CGRectMake(rect.size.width + rect.origin.x - psOffset, 7, psWidth, COUNT_HEIGHT);
+            rr = CGRectMake(rect.size.width + rect.origin.x - psOffset, CGRectGetMidY(r)-COUNT_HEIGHT/2-1, psWidth, COUNT_HEIGHT);
         }
         
         if (blueCount) {
@@ -107,16 +107,19 @@ const int COUNT_HEIGHT = 15;
         CGRect rr;
         if (listType == NBFeedListSocial) {
             if (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPad) {
-                rr = CGRectMake(rect.size.width + rect.origin.x - psWidth - psPadding - ntOffset, 7, ntWidth, COUNT_HEIGHT);
+                rr = CGRectMake(rect.size.width + rect.origin.x - psWidth - psPadding - ntOffset, CGRectGetMidY(r)-COUNT_HEIGHT/2-1, ntWidth, COUNT_HEIGHT);
             } else {
-                rr = CGRectMake(rect.size.width + rect.origin.x - psWidth - psPadding - ntOffset, 7, ntWidth, COUNT_HEIGHT);
+                rr = CGRectMake(rect.size.width + rect.origin.x - psWidth - psPadding - ntOffset, CGRectGetMidY(r)-COUNT_HEIGHT/2-1, ntWidth, COUNT_HEIGHT);
             }
         } else if (listType == NBFeedListFolder) {
-            rr = CGRectMake(rect.size.width + rect.origin.x - psWidth - psPadding - ntOffset - 22, 8, ntWidth, COUNT_HEIGHT);
+            rr = CGRectMake(rect.size.width + rect.origin.x - psWidth - psPadding - ntOffset - 22, CGRectGetMidY(r)-COUNT_HEIGHT/2-2, ntWidth, COUNT_HEIGHT);
         } else {
-            rr = CGRectMake(rect.size.width + rect.origin.x - psWidth - psPadding - ntOffset, 7, ntWidth, COUNT_HEIGHT);
+            rr = CGRectMake(rect.size.width + rect.origin.x - psWidth - psPadding - ntOffset, CGRectGetMidY(r)-COUNT_HEIGHT/2-1, ntWidth, COUNT_HEIGHT);
         }
         
+        if (rr.origin.x > CGFLOAT_MAX) {
+            return;
+        }
         
         [UIColorFromLightDarkRGB(0x93968D, 0x53564D) set];
         CGRect rrShadow = CGRectMake(rr.origin.x, rr.origin.y+1, rr.size.width, rr.size.height);

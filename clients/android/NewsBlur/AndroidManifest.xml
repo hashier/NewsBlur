@@ -1,12 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.newsblur"
-    android:versionCode="142"
-    android:versionName="6.0.1" >
+    android:versionCode="167"
+    android:versionName="10.0" >
 
     <uses-sdk
-        android:minSdkVersion="19"
-        android:targetSdkVersion="24" />
+        android:minSdkVersion="21"
+        android:targetSdkVersion="28" />
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
@@ -74,12 +74,21 @@
         <activity
             android:name=".activity.Settings"
             android:label="@string/settings"/>
+
+        <activity
+            android:name=".activity.WidgetConfig"
+            android:launchMode="singleTask"
+            android:label="@string/widget" />
         
         <activity
             android:name=".activity.FeedItemsList" />
         
         <activity
-            android:name=".activity.AllStoriesItemsList" />
+            android:name=".activity.AllStoriesItemsList"
+            android:launchMode="singleTask"/>
+
+        <activity
+            android:name=".activity.InfrequentItemsList" />
 
         <activity
             android:name=".activity.ReadStoriesItemsList" />
@@ -104,6 +113,9 @@
         
         <activity
             android:name=".activity.AllStoriesReading"/>
+
+        <activity
+            android:name=".activity.InfrequentReading"/>
 
         <activity
             android:name=".activity.ReadStoriesReading"/>
@@ -131,7 +143,11 @@
         <activity
             android:name=".activity.SocialFeedReading"/>
 
-        <service android:name=".service.NBSyncService" />
+        <service 
+            android:name=".service.NBSyncService"
+            android:permission="android.permission.BIND_JOB_SERVICE" />
+        <service android:name=".widget.WidgetRemoteViewsService"
+            android:permission="android.permission.BIND_REMOTEVIEWS" />
 
         <receiver android:name=".service.BootReceiver">
             <intent-filter>
@@ -139,12 +155,27 @@
             </intent-filter>
         </receiver>
 
-        <receiver android:name=".service.ServiceScheduleReceiver" />
-        
         <receiver android:name=".util.NotifyDismissReceiver" android:exported="false" />
         <receiver android:name=".util.NotifySaveReceiver" android:exported="false" />
         <receiver android:name=".util.NotifyMarkreadReceiver" android:exported="false" />
-
+        <receiver android:name=".widget.WidgetProvider"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data android:name="android.appwidget.provider"
+                android:resource="@xml/newsblur_appwidget_info" />
+        </receiver>
+        <receiver android:name=".service.TimeChangeReceiver">
+            <intent-filter >
+                <action android:name="android.intent.action.TIME_SET"/>
+            </intent-filter>
+        </receiver>
+        <receiver
+            android:name=".widget.WidgetUpdateReceiver"
+            android:enabled="true"
+            android:exported="false">
+        </receiver>
         <provider
             android:name="android.support.v4.content.FileProvider"
             android:authorities="com.newsblur.fileprovider"
@@ -154,6 +185,49 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/file_paths" />
         </provider>
+
+        <activity android:name=".activity.AddFeedExternal">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="http"/>
+                <data android:scheme="https"/>
+                <data android:host="*"/>
+                <data android:pathPattern=".*xml"/>
+                <data android:pathPattern=".*rss"/>
+                <data android:pathPattern=".*atom"/>
+                <data android:pathPattern=".*json"/>
+                <data android:pathPattern=".*/feed.*"/>
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="feed" />
+                <data android:scheme="rss" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="http"/>
+                <data android:scheme="https"/>
+                <data android:host="feeds.feedburner.com"/>
+                <data android:host="feeds2.feedburner.com"/>
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:mimeType="text/xml"/>
+                <data android:mimeType="application/rss+xml"/>
+                <data android:mimeType="application/atom+xml"/>
+                <data android:mimeType="application/xml"/>
+                <data android:mimeType="application/json"/>
+                <data android:mimeType="application/feed+json"/>
+            </intent-filter>
+        </activity>
 
     </application>
 

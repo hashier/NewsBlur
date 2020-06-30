@@ -37,6 +37,8 @@ BROKEN_PAGE_URLS = [
     'twitter.com',
     'rankexploits',
     'gamespot.com',
+    'espn.com',
+    'royalroad.com',
 ]
 
 class PageImporter(object):
@@ -117,7 +119,11 @@ class PageImporter(object):
                     return
             if data:
                 html = self.rewrite_page(data)
-                self.save_page(html)
+                if html:
+                    self.save_page(html)
+                else:
+                    self.save_no_page()
+                    return
             else:
                 self.save_no_page()
                 return
@@ -169,7 +175,9 @@ class PageImporter(object):
     def _fetch_story(self):
         html = None
         story_permalink = self.story.story_permalink
-            
+        
+        if not self.feed:
+            return
         if any(story_permalink.startswith(s) for s in BROKEN_PAGES):
             return
         if any(s in story_permalink.lower() for s in BROKEN_PAGE_URLS):
@@ -180,11 +188,12 @@ class PageImporter(object):
         try:
             response = requests.get(story_permalink, headers=self.headers)
             response.connection.close()
-        except requests.exceptions.TooManyRedirects:
-            response = requests.get(story_permalink)
-        except (AttributeError, SocketError, OpenSSLError, PyAsn1Error, requests.exceptions.ConnectionError), e:
-            logging.debug('   ***> [%-30s] Original story fetch failed using requests: %s' % (self.feed.log_title[:30], e))
-            return
+        except (AttributeError, SocketError, OpenSSLError, PyAsn1Error, requests.exceptions.ConnectionError, requests.exceptions.TooManyRedirects), e:
+            try:
+                response = requests.get(story_permalink)
+            except (AttributeError, SocketError, OpenSSLError, PyAsn1Error, requests.exceptions.ConnectionError, requests.exceptions.TooManyRedirects), e:
+                logging.debug('   ***> [%-30s] Original story fetch failed using requests: %s' % (self.feed.log_title[:30], e))
+                return
         try:
             data = response.text
         except (LookupError, TypeError):
@@ -200,6 +209,8 @@ class PageImporter(object):
             data = data.replace("\xc2\xa0", " ") # Non-breaking space, is mangled when encoding is not utf-8
             data = data.replace("\u00a0", " ") # Non-breaking space, is mangled when encoding is not utf-8
             html = self.rewrite_page(data)
+            if not html:
+                return
             self.save_story(html)
         
         return html
@@ -224,8 +235,9 @@ class PageImporter(object):
         try:
             html = BASE_RE.sub(r'<head\1 '+base_code, response)
         except:
-            response = response.decode('latin1').encode('utf-8')
-            html = BASE_RE.sub(r'<head\1 '+base_code, response)
+            # response = response.decode('latin1').encode('utf-8')
+            # html = BASE_RE.sub(r'<head\1 '+base_code, response)
+            return None
         
         if '<base href' not in html:
             html = "%s %s" % (base_code, html)

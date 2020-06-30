@@ -17,6 +17,9 @@ public class DatabaseConstants {
 
     private DatabaseConstants(){} // util class - no instances
 
+    // the largest value that can be queried from an Android DB (config_cursorWindowSize and worst-case encoding overhead)
+    public static final int MAX_TEXT_SIZE = 1024 * 2048 / 4;
+
 	private static final String TEXT = " TEXT";
 	private static final String INTEGER = " INTEGER";
 
@@ -32,6 +35,9 @@ public class DatabaseConstants {
 	public static final String FEED_LINK = "link";
 	public static final String FEED_ADDRESS = "address";
 	public static final String FEED_SUBSCRIBERS = "subscribers";
+	public static final String FEED_OPENS = "opens";
+	public static final String FEED_LAST_STORY_DATE = "last_story_date";
+	public static final String FEED_AVERAGE_STORIES_PER_MONTH = "average_stories_per_month";
 	public static final String FEED_UPDATED_SECONDS = "updated_seconds";
 	public static final String FEED_FAVICON_FADE = "favicon_fade";
 	public static final String FEED_FAVICON_COLOR = "favicon_color";
@@ -44,6 +50,7 @@ public class DatabaseConstants {
 	public static final String FEED_NEGATIVE_COUNT = "ng";
     public static final String FEED_NOTIFICATION_TYPES = "notification_types";
     public static final String FEED_NOTIFICATION_FILTER = "notification_filter";
+    public static final String FEED_FETCH_PENDING = "fetch_pending";
 
 	public static final String SOCIALFEED_TABLE = "social_feeds";
 	public static final String SOCIAL_FEED_ID = BaseColumns._ID;
@@ -99,6 +106,7 @@ public class DatabaseConstants {
     public static final String STORY_LAST_READ_DATE = "last_read_date";
     public static final String STORY_SEARCH_HIT = "search_hit";
     public static final String STORY_THUMBNAIL_URL = "thumbnail_url";
+    public static final String STORY_INFREQUENT = "infrequent";
 
     public static final String READING_SESSION_TABLE = "reading_session";
     public static final String READING_SESSION_STORY_HASH = "session_story_hash";
@@ -118,6 +126,7 @@ public class DatabaseConstants {
 	public static final String COMMENT_BYFRIEND = "comment_byfriend";
 	public static final String COMMENT_USERID = "comment_userid";
 	public static final String COMMENT_ISPSEUDO = "comment_ispseudo";
+	public static final String COMMENT_ISPLACEHOLDER = "comment_isplaceholder";
 
 	public static final String REPLY_TABLE = "comment_replies";
 	public static final String REPLY_ID = BaseColumns._ID;
@@ -126,23 +135,13 @@ public class DatabaseConstants {
 	public static final String REPLY_USERID = "reply_userid";
 	public static final String REPLY_DATE = "reply_date";
 	public static final String REPLY_SHORTDATE = "reply_shortdate";
+	public static final String REPLY_ISPLACEHOLDER = "reply_isplaceholder";
 
     public static final String ACTION_TABLE = "story_actions";
 	public static final String ACTION_ID = BaseColumns._ID;
     public static final String ACTION_TIME = "time";
     public static final String ACTION_TRIED = "tried";
-    public static final String ACTION_TYPE = "action_type";
-    public static final String ACTION_COMMENT_TEXT = "comment_text";
-    public static final String ACTION_STORY_HASH = "story_hash";
-    public static final String ACTION_FEED_ID = "feed_id";
-    public static final String ACTION_MODIFIED_FEED_IDS = "modified_feed_ids";
-    public static final String ACTION_INCLUDE_OLDER = "include_older";
-    public static final String ACTION_INCLUDE_NEWER = "include_newer";
-    public static final String ACTION_STORY_ID = "story_id";
-    public static final String ACTION_SOURCE_USER_ID = "source_user_id";
-    public static final String ACTION_COMMENT_ID = "comment_id";
-    public static final String ACTION_NOTIFY_FILTER = "notify_filter";
-    public static final String ACTION_NOTIFY_TYPES = "notify_types";
+    public static final String ACTION_PARAMS = "action_params";
 
     public static final String STARREDCOUNTS_TABLE = "starred_counts";
     public static final String STARREDCOUNTS_COUNT = "count";
@@ -153,6 +152,17 @@ public class DatabaseConstants {
     public static final String NOTIFY_DISMISS_STORY_HASH = "story_hash";
     public static final String NOTIFY_DISMISS_TIME = "time";
 
+    public static final String FEED_TAGS_TABLE = "feed_tags";
+    public static final String FEED_TAGS_FEEDID = "feed_id";
+    public static final String FEED_TAGS_TAG = "tag";
+
+    public static final String FEED_AUTHORS_TABLE = "feed_authors";
+    public static final String FEED_AUTHORS_FEEDID = "feed_id";
+    public static final String FEED_AUTHORS_AUTHOR = "author";
+
+    public static final String SYNC_METADATA_TABLE = "sync_metadata";
+    public static final String SYNC_METADATA_KEY = "key";
+    public static final String SYNC_METADATA_VALUE = "value";
 
 	static final String FOLDER_SQL = "CREATE TABLE " + FOLDER_TABLE + " (" +
 		FOLDER_NAME + TEXT + " PRIMARY KEY, " +  
@@ -176,9 +186,13 @@ public class DatabaseConstants {
 		FEED_LINK + TEXT + ", " + 
 		FEED_SUBSCRIBERS + TEXT + ", " +
 		FEED_TITLE + TEXT + ", " + 
+		FEED_OPENS + INTEGER + ", " +
+		FEED_AVERAGE_STORIES_PER_MONTH + INTEGER + ", " +
+		FEED_LAST_STORY_DATE + TEXT + ", " +
 		FEED_UPDATED_SECONDS + INTEGER + ", " +
         FEED_NOTIFICATION_TYPES + TEXT + ", " +
-        FEED_NOTIFICATION_FILTER + TEXT +
+        FEED_NOTIFICATION_FILTER + TEXT + ", " +
+        FEED_FETCH_PENDING + TEXT +
 		")";
 	
 	static final String USER_SQL = "CREATE TABLE " + USER_TABLE + " (" + 
@@ -208,7 +222,8 @@ public class DatabaseConstants {
 		COMMENT_STORYID + TEXT + ", " + 
 		COMMENT_TEXT + TEXT + ", " +
 		COMMENT_USERID + TEXT + ", " +
-        COMMENT_ISPSEUDO + TEXT +
+        COMMENT_ISPSEUDO + TEXT + ", " +
+        COMMENT_ISPLACEHOLDER + TEXT +
 		")";
 	
 	static final String REPLY_SQL = "CREATE TABLE " + REPLY_TABLE + " (" +
@@ -217,7 +232,8 @@ public class DatabaseConstants {
 		REPLY_ID + TEXT + " PRIMARY KEY, " +
 		REPLY_COMMENTID + TEXT + ", " + 
 		REPLY_TEXT + TEXT + ", " +
-		REPLY_USERID + TEXT +
+		REPLY_USERID + TEXT + ", " +
+        REPLY_ISPLACEHOLDER + TEXT +
 		")";
 	
 	static final String STORY_SQL = "CREATE TABLE " + STORY_TABLE + " (" + 
@@ -244,6 +260,7 @@ public class DatabaseConstants {
 		STORY_READ + INTEGER + ", " +
 		STORY_STARRED + INTEGER + ", " +
 		STORY_STARRED_DATE + INTEGER + ", " +
+        STORY_INFREQUENT + INTEGER + ", " +
 		STORY_TITLE + TEXT + ", " +
         STORY_IMAGE_URLS + TEXT + ", " +
         STORY_LAST_READ_DATE + INTEGER + ", " +
@@ -277,18 +294,7 @@ public class DatabaseConstants {
         ACTION_ID + INTEGER + " PRIMARY KEY AUTOINCREMENT, " +
         ACTION_TIME + INTEGER + " NOT NULL, " +
         ACTION_TRIED + INTEGER + ", " +
-        ACTION_TYPE + TEXT + ", " +
-        ACTION_COMMENT_TEXT + TEXT + ", " +
-        ACTION_STORY_HASH + TEXT + ", " +
-        ACTION_FEED_ID + TEXT + ", " +
-        ACTION_INCLUDE_OLDER + INTEGER + ", " +
-        ACTION_INCLUDE_NEWER + INTEGER + ", " +
-        ACTION_STORY_ID + TEXT + ", " +
-        ACTION_SOURCE_USER_ID + TEXT + ", " +
-        ACTION_COMMENT_ID + TEXT + ", " +
-        ACTION_MODIFIED_FEED_IDS + TEXT + ", " +
-        ACTION_NOTIFY_FILTER + TEXT + ", " +
-        ACTION_NOTIFY_TYPES + TEXT + 
+        ACTION_PARAMS + TEXT +
         ")";
 
 	static final String STARREDCOUNTS_SQL = "CREATE TABLE " + STARREDCOUNTS_TABLE + " (" +
@@ -300,6 +306,21 @@ public class DatabaseConstants {
     static final String NOTIFY_DISMISS_SQL = "CREATE TABLE " + NOTIFY_DISMISS_TABLE + " (" +
         NOTIFY_DISMISS_STORY_HASH + TEXT + ", " +
         NOTIFY_DISMISS_TIME + INTEGER + " NOT NULL " +
+        ")";
+
+    static final String FEED_TAGS_SQL = "CREATE TABLE " + FEED_TAGS_TABLE + " (" +
+        FEED_TAGS_FEEDID + TEXT + ", " +
+        FEED_TAGS_TAG + TEXT +
+        ")";
+
+    static final String FEED_AUTHORS_SQL = "CREATE TABLE " + FEED_AUTHORS_TABLE + " (" +
+        FEED_AUTHORS_FEEDID + TEXT + ", " +
+        FEED_AUTHORS_AUTHOR + TEXT +
+        ")";
+
+    static final String SYNC_METADATA_SQL = "CREATE TABLE " + SYNC_METADATA_TABLE + " (" +
+        SYNC_METADATA_KEY + TEXT + " PRIMARY KEY, " +
+        SYNC_METADATA_VALUE + TEXT +
         ")";
 
 	private static final String[] BASE_STORY_COLUMNS = {
@@ -315,7 +336,14 @@ public class DatabaseConstants {
         TextUtils.join(",", BASE_STORY_COLUMNS) + ", " + 
         FEED_TITLE + ", " + FEED_FAVICON_URL + ", " + FEED_FAVICON_COLOR + ", " + FEED_FAVICON_BORDER + ", " + FEED_FAVICON_FADE + ", " + FEED_FAVICON_TEXT;
 
-    public static final String STORY_QUERY_BASE_1 = 
+	public static final String STORY_QUERY_BASE_0 =
+			"SELECT " +
+					STORY_COLUMNS +
+					" FROM " + STORY_TABLE +
+					" INNER JOIN " + FEED_TABLE +
+					" ON " + STORY_TABLE + "." + STORY_FEED_ID + " = " + FEED_TABLE + "." + FEED_ID +
+					" WHERE ";
+	public static final String STORY_QUERY_BASE_1 =
         "SELECT " +
         STORY_COLUMNS +
         " FROM " + STORY_TABLE +
@@ -396,42 +424,6 @@ public class DatabaseConstants {
         }
     }
     
-    /**
-     * Selection args to filter feeds.
-     */
-    public static String getFeedSelectionFromState(StateFilter state) {
-        switch (state) {
-        case ALL:
-            return null; // don't filter
-        case SOME:
-            return FEED_ACTIVE + " = '1' AND ((" + FEED_NEUTRAL_COUNT + " + " + FEED_POSITIVE_COUNT + ") > 0)";
-        case BEST:
-            return FEED_ACTIVE + " = '1' AND (" + FEED_POSITIVE_COUNT + " > 0)";
-        case SAVED:
-            return FEED_ACTIVE + " = '1'"; // due to API structure, we can't filter for saveds, so the caller will have to sort that out
-        default:
-            return null;
-        }
-    }
-
-    /**
-     * Selection args to filter social feeds.
-     */
-    public static String getBlogSelectionFromState(StateFilter state) {
-        switch (state) {
-        case ALL:
-            return null;
-        case SOME:
-            return "((" + SOCIAL_FEED_NEUTRAL_COUNT + " + " + SOCIAL_FEED_POSITIVE_COUNT + ") > 0)";
-        case BEST:
-            return "(" + SOCIAL_FEED_POSITIVE_COUNT + " > 0)";
-        case SAVED:
-            return "0";
-        default:
-            return null;
-        }
-    }
-
     public static String getStorySortOrder(StoryOrder storyOrder) {
         // it is not uncommon for a feed to have multiple stories with exactly the same timestamp. we
         // arbitrarily pick a second sort column so sortation is stable.
@@ -471,4 +463,6 @@ public class DatabaseConstants {
     public static List<String> unflattenStringList(String flat) {
         return JsonHelper.fromJson(flat, new TypeToken<List<String>>(){}.getType());
     }
+
+    public static final String SYNC_METADATA_KEY_SESSION_FEED_SET = "session_feed_set";
 }

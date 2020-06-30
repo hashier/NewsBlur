@@ -76,9 +76,11 @@ def load_social_stories(request, user_id, username=None):
         if story_hashes:
             mstories = MSharedStory.objects(user_id=social_user.pk,
                                             story_hash__in=story_hashes).order_by(story_date_order)
+            for story in mstories: story.extract_image_urls()
             stories = Feed.format_stories(mstories)
     else:
         mstories = MSharedStory.objects(user_id=social_user.pk).order_by('-shared_date')[offset:offset+limit]
+        for story in mstories: story.extract_image_urls()
         stories = Feed.format_stories(mstories)
 
     if not stories or False: # False is to force a recount even if 0 stories
@@ -658,11 +660,7 @@ def mark_story_as_shared(request):
     if post_to_services:
         for service in post_to_services:
             if service not in shared_story.posted_to_services:
-                if service == 'appdotnet':
-                    # XXX TODO: Remove. Only for www->dev.
-                    shared_story.post_to_service(service)
-                else:
-                    PostToService.delay(shared_story_id=shared_story.id, service=service)
+                PostToService.delay(shared_story_id=shared_story.id, service=service)
     
     if shared_story.source_user_id and shared_story.comments:
         EmailStoryReshares.apply_async(kwargs=dict(shared_story_id=shared_story.id),
@@ -748,9 +746,16 @@ def save_comment_reply(request):
             'message': 'You must be following %s to reply to them.' % commenter_profile.username,
         })
     
-    shared_story = MSharedStory.objects.get(user_id=comment_user_id, 
-                                            story_feed_id=feed_id, 
-                                            story_guid=story_id)
+    try:
+        shared_story = MSharedStory.objects.get(user_id=comment_user_id, 
+                                                story_feed_id=feed_id, 
+                                                story_guid=story_id)
+    except MSharedStory.DoesNotExist:
+        return json.json_response(request, {
+            'code': -1, 
+            'message': 'Shared story cannot be found.',
+        })
+        
     reply = MCommentReply()
     reply.user_id = request.user.pk
     reply.publish_date = datetime.datetime.now()
@@ -980,7 +985,7 @@ def save_user_profile(request):
     profile.private = is_true(data.get('private', False))
     profile.save()
 
-    social_services = MSocialServices.objects.get(user_id=request.user.pk)
+    social_services = MSocialServices.get_user(user_id=request.user.pk)
     profile = social_services.set_photo(data['photo_service'])
     
     logging.user(request, "~BB~FRSaving social profile")

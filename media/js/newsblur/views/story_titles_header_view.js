@@ -76,17 +76,6 @@ NEWSBLUR.Views.StoryTitlesHeader = Backbone.View.extend({
         } else if (this.showing_fake_folder) {
             $view = $(_.template('\
                 <div class="NB-folder NB-no-hover NB-folder-<%= all_stories ? "river" : "fake" %>">\
-                    <div class="NB-search-container"></div>\
-                    <% if (show_options) { %>\
-                        <div class="NB-feedbar-options-container">\
-                            <span class="NB-feedbar-options">\
-                                <div class="NB-icon"></div>\
-                                <%= NEWSBLUR.assets.view_setting(folder_id, "read_filter") %>\
-                                &middot;\
-                                <%= NEWSBLUR.assets.view_setting(folder_id, "order") %>\
-                            </span>\
-                        </div>\
-                    <% } %>\
                     <div class="NB-feedbar-mark-feed-read-container">\
                         <div class="NB-feedbar-mark-feed-read"><div class="NB-icon"></div></div>\
                         <div class="NB-feedbar-mark-feed-read-time" data-days="1">1d</div>\
@@ -95,6 +84,21 @@ NEWSBLUR.Views.StoryTitlesHeader = Backbone.View.extend({
                         <div class="NB-feedbar-mark-feed-read-time" data-days="14">14d</div>\
                         <div class="NB-feedbar-mark-feed-read-expand"></div>\
                     </div>\
+                    <div class="NB-search-container"></div>\
+                    <% if (show_options) { %>\
+                        <div class="NB-feedbar-options-container">\
+                            <span class="NB-feedbar-options">\
+                                <div class="NB-icon"></div>\
+                                <%= NEWSBLUR.assets.view_setting(folder_id, "read_filter") %>\
+                                &middot;\
+                                <%= NEWSBLUR.assets.view_setting(folder_id, "order") %>\
+                                <% if (infrequent_stories) { %>\
+                                    &middot;\
+                                    &lt; <%= infrequent_freq %> stories/month\
+                                <% } %>\
+                            </span>\
+                        </div>\
+                    <% } %>\
                     <div class="NB-story-title-indicator">\
                         <div class="NB-story-title-indicator-count"></div>\
                         <span class="NB-story-title-indicator-text">show hidden stories</span>\
@@ -106,7 +110,9 @@ NEWSBLUR.Views.StoryTitlesHeader = Backbone.View.extend({
             ', {
                 folder_title: NEWSBLUR.reader.active_fake_folder_title(),
                 folder_id: NEWSBLUR.reader.active_feed,
-                all_stories: NEWSBLUR.reader.active_feed == "river:",
+                all_stories: NEWSBLUR.reader.active_feed == "river:" || NEWSBLUR.reader.active_feed == "river:infrequent",
+                infrequent_stories: NEWSBLUR.reader.active_feed == "river:infrequent",
+                infrequent_freq: NEWSBLUR.assets.preference('infrequent_stories_per_month'),
                 show_options: !NEWSBLUR.reader.active_folder.get('fake') ||
                               NEWSBLUR.reader.active_folder.get('show_options')
             }));
@@ -160,6 +166,14 @@ NEWSBLUR.Views.StoryTitlesHeader = Backbone.View.extend({
         if (!this.search_view) return;
         
         this.search_view.focus_search();
+    },
+    
+    watch_toggled_sidebar: function() {
+        if (NEWSBLUR.reader.flags['sidebar_closed']) {
+            $(".NB-feedbar").addClass("NB-sidebar-closed");
+        } else {
+            $(".NB-feedbar").removeClass("NB-sidebar-closed");
+        }
     },
     
     // ===========

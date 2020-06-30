@@ -54,6 +54,15 @@ public class Feed implements Comparable<Feed>, Serializable {
 	@SerializedName("num_subscribers")
 	public String subscribers;
 
+	@SerializedName("feed_opens")
+    public int feedOpens;
+
+	@SerializedName("last_story_date")
+    public String lastStoryDate;
+
+	@SerializedName("average_stories_per_month")
+    public int storiesPerMonth;
+
 	@SerializedName("feed_title")
 	public String title;
 
@@ -66,6 +75,9 @@ public class Feed implements Comparable<Feed>, Serializable {
     // NB: only stored if notificationTypes was set to include android
     @SerializedName("notification_filter")
     public String notificationFilter;
+
+    // not vended by API, but used locally for UI
+    public boolean fetchPending;
 
 	public ContentValues getValues() {
 		ContentValues values = new ContentValues();
@@ -82,12 +94,16 @@ public class Feed implements Comparable<Feed>, Serializable {
 		values.put(DatabaseConstants.FEED_FAVICON_URL, faviconUrl);
 		values.put(DatabaseConstants.FEED_LINK, feedLink);
 		values.put(DatabaseConstants.FEED_SUBSCRIBERS, subscribers);
+		values.put(DatabaseConstants.FEED_OPENS, feedOpens);
+		values.put(DatabaseConstants.FEED_LAST_STORY_DATE, lastStoryDate);
+		values.put(DatabaseConstants.FEED_AVERAGE_STORIES_PER_MONTH, storiesPerMonth);
 		values.put(DatabaseConstants.FEED_TITLE, title);
 		values.put(DatabaseConstants.FEED_UPDATED_SECONDS, lastUpdated);
         values.put(DatabaseConstants.FEED_NOTIFICATION_TYPES, DatabaseConstants.flattenStringList(notificationTypes));
         if (isNotifyAndroid()) {
             values.put(DatabaseConstants.FEED_NOTIFICATION_FILTER, notificationFilter);
         }
+        values.put(DatabaseConstants.FEED_FETCH_PENDING, fetchPending);
 		return values;
 	}
 
@@ -109,10 +125,14 @@ public class Feed implements Comparable<Feed>, Serializable {
 		feed.neutralCount = cursor.getInt(cursor.getColumnIndex(DatabaseConstants.FEED_NEUTRAL_COUNT));
 		feed.positiveCount = cursor.getInt(cursor.getColumnIndex(DatabaseConstants.FEED_POSITIVE_COUNT));
 		feed.subscribers = cursor.getString(cursor.getColumnIndex(DatabaseConstants.FEED_SUBSCRIBERS));
+		feed.feedOpens = cursor.getInt(cursor.getColumnIndex(DatabaseConstants.FEED_OPENS));
+		feed.storiesPerMonth = cursor.getInt(cursor.getColumnIndex(DatabaseConstants.FEED_AVERAGE_STORIES_PER_MONTH));
+		feed.lastStoryDate = cursor.getString(cursor.getColumnIndex(DatabaseConstants.FEED_LAST_STORY_DATE));
 		feed.title = cursor.getString(cursor.getColumnIndex(DatabaseConstants.FEED_TITLE));
         feed.lastUpdated = cursor.getInt(cursor.getColumnIndex(DatabaseConstants.FEED_UPDATED_SECONDS));
         feed.notificationTypes = DatabaseConstants.unflattenStringList(cursor.getString(cursor.getColumnIndex(DatabaseConstants.FEED_NOTIFICATION_TYPES)));
         feed.notificationFilter = cursor.getString(cursor.getColumnIndex(DatabaseConstants.FEED_NOTIFICATION_FILTER));
+        feed.fetchPending = cursor.getString(cursor.getColumnIndex(DatabaseConstants.FEED_FETCH_PENDING)).equals("1");
 		return feed;
 	}
 
@@ -132,13 +152,15 @@ public class Feed implements Comparable<Feed>, Serializable {
 	
 	@Override
 	public boolean equals(Object o) {
+        if (! (o instanceof Feed)) return false;
 		Feed otherFeed = (Feed) o;
-		boolean isEquals = (TextUtils.equals(feedId, otherFeed.feedId) && 
-				negativeCount == otherFeed.negativeCount && 
-				neutralCount == otherFeed.neutralCount && 
-				positiveCount == otherFeed.positiveCount);
-		return isEquals;
+		return (TextUtils.equals(feedId, otherFeed.feedId));
 	}
+
+    @Override
+    public int hashCode() {
+        return feedId.hashCode();
+    }
 
     public int compareTo(Feed f) {
         return title.compareToIgnoreCase(f.title);

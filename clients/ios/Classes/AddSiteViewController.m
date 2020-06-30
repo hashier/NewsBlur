@@ -13,7 +13,6 @@
 #import "NBContainerViewController.h"
 #import "MenuViewController.h"
 #import "SBJson4.h"
-#import "Base64.h"
 
 @interface AddSiteViewController()
 
@@ -202,7 +201,7 @@
     [self.siteActivityIndicator startAnimating];
     NSString *urlString = [NSString stringWithFormat:@"%@/rss_feeds/feed_autocomplete?term=%@&v=2",
                            appDelegate.url, [phrase stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLHostAllowedCharacterSet]]];
-    [appDelegate.networkManager GET:urlString parameters:nil progress:nil success:^(NSURLSessionDataTask * _Nonnull task, id  _Nullable responseObject) {
+    [appDelegate GET:urlString parameters:nil success:^(NSURLSessionDataTask * _Nonnull task, id  _Nullable responseObject) {
         NSString *query = [NSString stringWithFormat:@"%@", [responseObject objectForKey:@"term"]];
         NSString *phrase = self.siteAddressInput.text;
         
@@ -256,7 +255,7 @@
         [params setObject:[self.addFolderInput text] forKey:@"new_folder"];
     }
     
-    [appDelegate.networkManager POST:urlString parameters:params progress:nil success:^(NSURLSessionDataTask * _Nonnull task, id  _Nullable responseObject) {
+    [appDelegate POST:urlString parameters:params success:^(NSURLSessionDataTask * _Nonnull task, id  _Nullable responseObject) {
         
         [self.addingLabel setHidden:YES];
         [self.activityIndicator stopAnimating];
@@ -332,7 +331,8 @@
 
 - (NSArray *)folders {
     return _.without([appDelegate dictFoldersArray],
-                     @[@"saved_stories",
+                     @[@"saved_searches",
+                       @"saved_stories",
                        @"read_stories",
                        @"river_blurblogs",
                        @"river_global",
@@ -413,7 +413,7 @@
     NSString *favicon = [result objectForKey:@"favicon"];
     UIImage *faviconImage;
     if ((NSNull *)favicon != [NSNull null] && [favicon length] > 0) {
-        NSData *imageData = [NSData dataWithBase64EncodedString:favicon];
+        NSData *imageData = [[NSData alloc] initWithBase64EncodedString:favicon options:NSDataBase64DecodingIgnoreUnknownCharacters];
         faviconImage = [UIImage imageWithData:imageData];
     } else {
         faviconImage = [UIImage imageNamed:@"world.png"];

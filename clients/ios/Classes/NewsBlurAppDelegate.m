@@ -1,4 +1,3 @@
-
 //  NewsBlurAppDelegate.m
 //  NewsBlur
 //
@@ -13,7 +12,6 @@
 #import "DashboardViewController.h"
 #import "MarkReadMenuViewController.h"
 #import "FeedsMenuViewController.h"
-#import "FeedDetailMenuViewController.h"
 #import "StoryDetailViewController.h"
 #import "StoryPageControl.h"
 #import "FirstTimeUserViewController.h"
@@ -29,6 +27,7 @@
 #import "FontSettingsViewController.h"
 #import "FeedChooserViewController.h"
 #import "UserProfileViewController.h"
+#import "PremiumViewController.h"
 #import "InteractionsModule.h"
 #import "ActivityModule.h"
 #import "FirstTimeUserViewController.h"
@@ -51,6 +50,7 @@
 #import "IASKAppSettingsViewController.h"
 #import "OfflineSyncUnreads.h"
 #import "OfflineFetchStories.h"
+#import "OfflineFetchText.h"
 #import "OfflineFetchImages.h"
 #import "OfflineCleanImages.h"
 #import "NBBarButtonItem.h"
@@ -66,18 +66,24 @@
 #import "PINCache.h"
 #import <float.h>
 #import <UserNotifications/UserNotifications.h>
+#import <Intents/Intents.h>
+#import <CoreSpotlight/CoreSpotlight.h>
+#import <CoreServices/CoreServices.h>
 
 @interface NewsBlurAppDelegate () <UIViewControllerTransitioningDelegate, UNUserNotificationCenterDelegate>
 
 @property (nonatomic, strong) NSString *cachedURL;
 @property (nonatomic, strong) UIApplicationShortcutItem *launchedShortcutItem;
 @property (nonatomic, strong) SFSafariViewController *safariViewController;
+@property (nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *networkBackgroundTasks;
 
 @end
 
 @implementation NewsBlurAppDelegate
 
-#define CURRENT_DB_VERSION 35
+#define CURRENT_DB_VERSION 37
+
+#define CURRENT_STATE_VERSION 1
 
 @synthesize window;
 
@@ -87,13 +93,13 @@
 @synthesize shareNavigationController;
 @synthesize trainNavigationController;
 @synthesize notificationsNavigationController;
+@synthesize premiumNavigationController;
 @synthesize userProfileNavigationController;
 @synthesize masterContainerViewController;
 @synthesize dashboardViewController;
 @synthesize feedsViewController;
 @synthesize feedsMenuViewController;
 @synthesize feedDetailViewController;
-@synthesize feedDetailMenuViewController;
 @synthesize friendsListViewController;
 @synthesize fontSettingsViewController;
 @synthesize storyDetailViewController;
@@ -109,6 +115,7 @@
 @synthesize originalStoryViewNavController;
 @synthesize userProfileViewController;
 @synthesize preferencesViewController;
+@synthesize premiumViewController;
 
 @synthesize firstTimeUserViewController;
 @synthesize firstTimeUserAddSitesViewController;
@@ -148,6 +155,7 @@
 @synthesize recentlyReadFeeds;
 @synthesize readStories;
 @synthesize unreadStoryHashes;
+@synthesize unsavedStoryHashes;
 @synthesize folderCountCache;
 @synthesize collapsedFolders;
 @synthesize fontDescriptorTitleSize;
@@ -162,6 +170,8 @@
 @synthesize dictSocialServices;
 @synthesize dictUnreadCounts;
 @synthesize dictTextFeeds;
+@synthesize isPremium;
+@synthesize premiumExpire;
 @synthesize userInteractionsArray;
 @synthesize userActivitiesArray;
 @synthesize dictFoldersArray;
@@ -188,7 +198,7 @@
 	return (NewsBlurAppDelegate*) [UIApplication sharedApplication].delegate;
 }
 
-- (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
+- (BOOL)application:(UIApplication *)application willFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
     [self registerDefaultsFromSettingsBundle];
     
     self.navigationController.delegate = self;
@@ -196,10 +206,8 @@
     self.storiesCollection = [StoriesCollection new];
     
     if (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPad) {
-        [window addSubview:self.masterContainerViewController.view];
         self.window.rootViewController = self.masterContainerViewController;
     } else {
-        [window addSubview:self.navigationController.view];
         self.window.rootViewController = self.navigationController;
     }
     
@@ -226,13 +234,21 @@
 //    [self showFirstTimeUser];
     
     cachedFavicons = [[PINCache alloc] initWithName:@"NBFavicons"];
+    cachedFavicons.memoryCache.removeAllObjectsOnEnteringBackground = NO;
     cachedStoryImages = [[PINCache alloc] initWithName:@"NBStoryImages"];
+    cachedStoryImages.memoryCache.removeAllObjectsOnEnteringBackground = NO;
+    isPremium = NO;
+    premiumExpire = 0;
     
     NBURLCache *urlCache = [[NBURLCache alloc] init];
     [NSURLCache setSharedURLCache:urlCache];
     // Uncomment below line to test image caching
 //    [[NSURLCache sharedURLCache] removeAllCachedResponses];
     
+    return YES;
+}
+
+- (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
     if ([UIApplicationShortcutItem class] && launchOptions[UIApplicationLaunchOptionsShortcutItemKey]) {
         self.launchedShortcutItem = launchOptions[UIApplicationLaunchOptionsShortcutItemKey];
         return NO;
@@ -253,6 +269,15 @@
         [self handleShortcutItem:self.launchedShortcutItem];
         self.launchedShortcutItem = nil;
     }
+    
+    if (storyPageControl.temporarilyMarkedUnread && [storiesCollection isStoryUnread:activeStory]) {
+        [storiesCollection markStoryRead:activeStory];
+        [storiesCollection syncStoryAsRead:activeStory];
+        storyPageControl.temporarilyMarkedUnread = NO;
+        
+        [self.feedDetailViewController reloadData];
+        [self.storyPageControl refreshHeaders];
+    }
 }
 
 - (void)applicationWillResignActive:(UIApplication *)application {
@@ -265,6 +290,71 @@
 
 - (void)applicationDidEnterBackground:(UIApplication *)application {
     [self.feedsViewController refreshHeaderCounts];
+}
+
+- (BOOL)application:(UIApplication *)application shouldSaveApplicationState:(NSCoder *)coder {
+    return YES;
+}
+
+- (void)application:(UIApplication *)application willEncodeRestorableStateWithCoder:(NSCoder *)coder {
+    [coder encodeInteger:CURRENT_STATE_VERSION forKey:@"version"];
+    [coder encodeObject:[NSDate date] forKey:@"last_saved_state_date"];
+}
+
+- (BOOL)application:(UIApplication *)application shouldRestoreApplicationState:(NSCoder *)coder {
+    NSUserDefaults *preferences = [NSUserDefaults standardUserDefaults];
+    NSString *option = [preferences stringForKey:@"restore_state"];
+    
+    if ([option isEqualToString:@"never"]) {
+        return NO;
+    } else if ([option isEqualToString:@"always"]) {
+        return YES;
+    }
+    
+    NSTimeInterval daysInterval = 60 * 60;
+    NSTimeInterval limitInterval = option.doubleValue * daysInterval;
+    NSInteger version = [coder decodeIntegerForKey:@"version"];
+    NSDate *lastSavedDate = [coder decodeObjectOfClass:[NSDate class] forKey:@"last_saved_state_date"];
+    
+    if (limitInterval == 0) {
+        limitInterval = 24 * daysInterval;
+    }
+    
+    if (version > CURRENT_STATE_VERSION || lastSavedDate == nil) {
+        return NO;
+    }
+    
+    NSTimeInterval savedInterval = -[lastSavedDate timeIntervalSinceNow];
+    
+    return savedInterval < limitInterval;
+}
+
+- (UIViewController *)application:(UIApplication *)application viewControllerWithRestorationIdentifierPath:(NSArray<NSString *> *)identifierComponents coder:(NSCoder *)coder {
+    NSString *identifier = identifierComponents.lastObject;
+    
+    if ([identifier isEqualToString:@"MainNavigation"]) {
+        return self.navigationController;
+    } else if ([identifier isEqualToString:@"FeedsView"]) {
+        return self.feedsViewController;
+    } else if ([identifier isEqualToString:@"FeedDetailView"]) {
+        return self.feedDetailViewController;
+    } else if ([identifier isEqualToString:@"StoryPageControl"]) {
+        return self.storyPageControl;
+    } else if ([identifier isEqualToString:@"ContainerView"]) {
+        return self.masterContainerViewController;
+    } else {
+        return nil;
+    }
+}
+
+- (void)application:(UIApplication *)application didDecodeRestorableStateWithCoder:(NSCoder *)coder {
+    // All done; could do any cleanup here
+}
+
+- (BOOL)application:(UIApplication *)application continueUserActivity:(NSUserActivity *)userActivity restorationHandler:(void (^)(NSArray<id<UIUserActivityRestoring>> *restorableObjects))restorationHandler {
+    [self handleUserActivity:userActivity];
+    
+    return YES;
 }
 
 - (void)application:(UIApplication *)application performActionForShortcutItem:(UIApplicationShortcutItem *)shortcutItem completionHandler:(void (^)(BOOL))completionHandler {
@@ -290,6 +380,7 @@
             [self.navigationController popToRootViewControllerAnimated:NO];
             [self.feedsViewController didSelectSectionHeaderWithTag:2];
             self.feedDetailViewController.storiesCollection.searchQuery = @"";
+            self.feedDetailViewController.storiesCollection.savedSearchQuery = nil;
             self.feedDetailViewController.storiesCollection.inSearch = YES;
         } else {
             handled = NO;
@@ -350,6 +441,9 @@
     }
     
     [[NSUserDefaults standardUserDefaults] registerDefaults:defaultsToRegister];
+    
+    NSString *version = [[[NSBundle mainBundle] infoDictionary] objectForKey:@"CFBundleShortVersionString"];
+    [[NSUserDefaults standardUserDefaults] setObject:version forKey:@"version"];
 }
 
 - (void)registerForRemoteNotifications {
@@ -357,7 +451,9 @@
     center.delegate = self;
     [center requestAuthorizationWithOptions:(UNAuthorizationOptionSound | UNAuthorizationOptionAlert | UNAuthorizationOptionBadge) completionHandler:^(BOOL granted, NSError * _Nullable error){
         if(!error){
-            [[UIApplication sharedApplication] registerForRemoteNotifications];
+            dispatch_async(dispatch_get_main_queue(), ^{            
+                [[UIApplication sharedApplication] registerForRemoteNotifications];
+            });
         }
     }];
     
@@ -380,6 +476,15 @@
     [center setNotificationCategories:[NSSet setWithObject:storyCategory]];
 }
 
+
+- (void)registerForBadgeNotifications {
+    UNUserNotificationCenter *center = [UNUserNotificationCenter currentNotificationCenter];
+    center.delegate = self;
+    [center requestAuthorizationWithOptions:(UNAuthorizationOptionBadge) completionHandler:^(BOOL granted, NSError * _Nullable error){
+    
+    }];
+}
+
 //Called when a notification is delivered to a foreground app.
 -(void)userNotificationCenter:(UNUserNotificationCenter *)center willPresentNotification:(UNNotification *)notification withCompletionHandler:(void (^)(UNNotificationPresentationOptions options))completionHandler{
     NSLog(@"User Info : %@",notification.request.content.userInfo);
@@ -387,13 +492,13 @@
 }
 
 //Called to let your app know which action was selected by the user for a given notification.
--(void)userNotificationCenter:(UNUserNotificationCenter *)center didReceiveNotificationResponse:(UNNotificationResponse *)response withCompletionHandler:(void(^)())completionHandler {
+- (void)userNotificationCenter:(UNUserNotificationCenter *)center didReceiveNotificationResponse:(UNNotificationResponse *)response withCompletionHandler:(void (^)(void))completionHandler {
     [self processNotification:response.notification.request.content.userInfo
                        action:response.actionIdentifier
         withCompletionHandler:completionHandler];
 }
 
-- (void)processNotification:(NSDictionary *)content action:(NSString *)action withCompletionHandler:(void(^)())completionHandler {
+- (void)processNotification:(NSDictionary *)content action:(NSString *)action withCompletionHandler:(void(^)(void))completionHandler {
     NSLog(@"User Info : %@ / %@", content, action);
     NSString *storyHash = [content objectForKey:@"story_hash"];
     NSNumber *storyFeedId = [content objectForKey:@"story_feed_id"];
@@ -411,16 +516,9 @@
         }];
     } else if ([action isEqualToString:@"VIEW_STORY_IDENTIFIER"] ||
                [action isEqualToString:@"com.apple.UNNotificationDefaultActionIdentifier"]) {
-        if (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPad) {
-            [masterContainerViewController dismissViewControllerAnimated:NO completion:nil];
-            [self.navigationController
-             popToViewController:[self.navigationController.viewControllers
-                                  objectAtIndex:0]
-             animated:YES];
-        } else {
-            [self.navigationController popToRootViewControllerAnimated:NO];
-        }
-        [self loadFeed:feedIdStr withStory:storyHash animated:NO];
+        [self popToRootWithCompletion:^{
+            [self loadFeed:feedIdStr withStory:storyHash animated:NO];
+        }];
         if (completionHandler) completionHandler();
     } else if ([action isEqualToString:@"DISMISS_IDENTIFIER"]) {
         if (completionHandler) completionHandler();
@@ -440,7 +538,7 @@
     NSString *url = [NSString stringWithFormat:@"%@/notifications/apns_token/", self.url];
     NSMutableDictionary *params = [NSMutableDictionary dictionary];
     [params setObject:token forKey:@"apns_token"];
-    [networkManager POST:url parameters:params progress:nil success:^(NSURLSessionDataTask * _Nonnull task, id  _Nullable responseObject) {
+    [self POST:url parameters:params success:^(NSURLSessionDataTask * _Nonnull task, id  _Nullable responseObject) {
         NSLog(@" -> APNS: %@", responseObject);
     } failure:^(NSURLSessionDataTask * _Nullable task, NSError * _Nonnull error) {
         NSLog(@"Failed to set APNS token");
@@ -451,6 +549,45 @@
             openURL:(NSURL *)url
   sourceApplication:(NSString *)sourceApplication
          annotation:(id)annotation {
+    if (self.activeUsername && [url.scheme isEqualToString:@"newsblurwidget"]) {
+        NSMutableDictionary *query = [NSMutableDictionary dictionary];
+        
+        for (NSString *component in [url.query componentsSeparatedByString:@"&"]) {
+            NSArray *keyAndValue = [component componentsSeparatedByString:@"="];
+            
+            [query setObject:keyAndValue.lastObject forKey:keyAndValue.firstObject];
+        }
+        
+        NSString *feedId = query[@"feedId"];
+        NSString *storyHash = query[@"storyHash"];
+        NSString *error = query[@"error"];
+        
+        if (error.length) {
+            [self popToRootWithCompletion:^{
+                [self showWidgetSites];
+            }];
+            
+            return YES;
+        }
+        
+        if (!feedId.length || !storyHash.length) {
+            return NO;
+        }
+        
+        [self popToRootWithCompletion:^{
+            self.inFindingStoryMode = YES;
+            [storiesCollection reset];
+            storiesCollection.isRiverView = YES;
+            
+            self.tryFeedStoryId = storyHash;
+            storiesCollection.activeFolder = @"everything";
+            
+            [self loadRiverFeedDetailView:self.feedDetailViewController withFolder:storiesCollection.activeFolder];
+        }];
+        
+        return YES;
+    }
+    
     return NO;
 }
 
@@ -473,7 +610,9 @@
     };
     reach.unreachableBlock = ^(Reachability *reach) {
         NSLog(@"Un-Reachable: %@", reach);
-        [feedsViewController loadOfflineFeeds:NO];
+        dispatch_sync(dispatch_get_main_queue(), ^{
+            [feedsViewController loadOfflineFeeds:NO];
+        });
     };
     [reach startNotifier];
 }
@@ -606,6 +745,54 @@
     }
 }
 
+- (void)resizePreviewSize {
+    [feedsViewController resizePreviewSize];
+}
+
+- (void)resizeFontSize {
+    [feedsViewController resizeFontSize];
+}
+
+- (void)popToRootWithCompletion:(void (^)(void))completion {
+    if (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPad) {
+        if (completion) {
+            [CATransaction begin];
+            [CATransaction setCompletionBlock:completion];
+        }
+        
+        [masterContainerViewController dismissViewControllerAnimated:NO completion:nil];
+        [self.navigationController popToViewController:[self.navigationController.viewControllers objectAtIndex:0] animated:YES];
+        
+        if (completion) {
+            [CATransaction commit];
+        }
+    } else {
+        [self.navigationController popToRootViewControllerAnimated:NO];
+        
+        if (completion) {
+            completion();
+        }
+    }
+}
+
+- (void)showPremiumDialog {
+    UINavigationController *navController = self.navigationController;
+    if (self.premiumNavigationController == nil) {
+        self.premiumNavigationController = [[UINavigationController alloc]
+                                            initWithRootViewController:self.premiumViewController];
+    }
+    self.premiumNavigationController.navigationBar.translucent = NO;
+
+    if (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPad) {
+        [masterContainerViewController dismissViewControllerAnimated:NO completion:nil];
+        premiumNavigationController.modalPresentationStyle = UIModalPresentationFormSheet;
+        [masterContainerViewController presentViewController:premiumNavigationController animated:YES completion:nil];
+        [self.premiumViewController.view setNeedsLayout];
+    } else {
+        [navController presentViewController:self.premiumNavigationController animated:YES completion:nil];
+    }
+}
+
 - (void)showPreferences {
     if (!preferencesViewController) {
         preferencesViewController = [[IASKAppSettingsViewController alloc] init];
@@ -618,24 +805,9 @@
     preferencesViewController.showDoneButton = YES;
     preferencesViewController.showCreditsFooter = NO;
     preferencesViewController.title = @"Preferences";
-    NSMutableSet *hiddenSet = [NSMutableSet set];
-    BOOL offline_enabled = [[NSUserDefaults standardUserDefaults] boolForKey:@"offline_allowed"];
-    if (!offline_enabled) {
-        [hiddenSet addObjectsFromArray:@[@"offline_image_download",
-                                         @"offline_download_connection",
-                                         @"offline_store_limit"]];
-    }
-    BOOL system_font_enabled = [[NSUserDefaults standardUserDefaults] boolForKey:@"use_system_font_size"];
-    if (system_font_enabled) {
-        [hiddenSet addObjectsFromArray:@[@"feed_list_font_size"]];
-    }
-    BOOL theme_auto_toggle = [[NSUserDefaults standardUserDefaults] boolForKey:@"theme_auto_toggle"];
-    if (theme_auto_toggle) {
-        [hiddenSet addObjectsFromArray:@[@"theme_style", @"theme_gesture"]];
-    } else {
-        [hiddenSet addObjectsFromArray:@[@"theme_auto_brightness"]];
-    }
-    preferencesViewController.hiddenKeys = hiddenSet;
+    
+    [self setHiddenPreferencesAnimated:NO];
+    
     [[NSUserDefaults standardUserDefaults] setObject:@"Delete offline stories..."
                                               forKey:@"offline_cache_empty_stories"];
     
@@ -650,6 +822,41 @@
     } else {
         [navigationController presentViewController:modalNavigationController animated:YES completion:nil];
     }
+}
+
+- (void)setHiddenPreferencesAnimated:(BOOL)animated {
+    NSMutableSet *hiddenSet = [NSMutableSet set];
+    
+    BOOL offline_enabled = [[NSUserDefaults standardUserDefaults] boolForKey:@"offline_allowed"];
+    if (!offline_enabled) {
+        [hiddenSet addObjectsFromArray:@[@"offline_image_download",
+                                         @"offline_download_connection",
+                                         @"offline_store_limit"]];
+    }
+    BOOL system_font_enabled = [[NSUserDefaults standardUserDefaults] boolForKey:@"use_system_font_size"];
+    if (system_font_enabled) {
+        [hiddenSet addObjectsFromArray:@[@"feed_list_font_size"]];
+    }
+    if (@available(iOS 13.0, *)) {
+        BOOL theme_follow_system = [[NSUserDefaults standardUserDefaults] boolForKey:@"theme_follow_system"];
+        if (theme_follow_system) {
+            [hiddenSet addObjectsFromArray:@[@"theme_auto_toggle", @"theme_auto_brightness", @"theme_style", @"theme_gesture"]];
+            [[ThemeManager themeManager] updateForSystemAppearance];
+        }
+    }
+    BOOL theme_auto_toggle = [[NSUserDefaults standardUserDefaults] boolForKey:@"theme_auto_toggle"];
+    if (theme_auto_toggle) {
+        [hiddenSet addObjectsFromArray:@[@"theme_style", @"theme_gesture"]];
+    } else {
+        [hiddenSet addObjectsFromArray:@[@"theme_auto_brightness"]];
+    }
+    
+    BOOL story_full_screen = [[NSUserDefaults standardUserDefaults] boolForKey:@"story_full_screen"];
+    if (!story_full_screen) {
+        [hiddenSet addObjectsFromArray:@[@"story_hide_status_bar"]];
+    }
+    
+    [preferencesViewController setHiddenKeys:hiddenSet animated:animated];
 }
 
 - (void)showFeedChooserForOperation:(FeedChooserOperation)operation {
@@ -671,14 +878,16 @@
     }
 }
 
-
-
 - (void)showMuteSites {
     [self showFeedChooserForOperation:FeedChooserOperationMuteSites];
 }
 
 - (void)showOrganizeSites {
     [self showFeedChooserForOperation:FeedChooserOperationOrganizeSites];
+}
+
+- (void)showWidgetSites {
+    [self showFeedChooserForOperation:FeedChooserOperationWidgetSites];
 }
 
 - (void)showFindFriends {
@@ -895,6 +1104,11 @@
     [userPreferences synchronize];
     
     if (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPad) {
+        if (self.masterContainerViewController.presentedViewController == loginViewController) {
+            NSLog(@"Already showing login!");
+            return;
+        }
+        loginViewController.modalPresentationStyle = UIModalPresentationFullScreen;
         [self.masterContainerViewController presentViewController:loginViewController animated:NO completion:nil];
     } else {
         [feedsMenuViewController dismissViewControllerAnimated:NO completion:nil];
@@ -918,7 +1132,7 @@
     
     if (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPad) {
         [masterContainerViewController dismissViewControllerAnimated:NO completion:nil];
-        self.ftuxNavigationController.modalPresentationStyle = UIModalPresentationFormSheet;
+        self.ftuxNavigationController.modalPresentationStyle = UIModalPresentationFullScreen;
         [self.masterContainerViewController presentViewController:self.ftuxNavigationController animated:YES completion:nil];
         
         self.ftuxNavigationController.view.superview.frame = CGRectMake(0, 0, 540, 540);//it's important to do this after 
@@ -1029,7 +1243,7 @@
     
     [self.dictFeeds setObject:feed forKey:feedId];
     
-    [self.networkManager POST:urlString parameters:params progress:nil success:^(NSURLSessionDataTask * _Nonnull task, id  _Nullable responseObject) {
+    [self POST:urlString parameters:params success:^(NSURLSessionDataTask * _Nonnull task, id  _Nullable responseObject) {
         NSLog(@"Saved notifications %@: %@", feedId, params);
         [self checkForFeedNotifications];
     } failure:^(NSURLSessionDataTask * _Nullable task, NSError * _Nonnull error) {
@@ -1064,6 +1278,16 @@
     }];
 }
 
+- (void)openStatisticsWithFeed:(NSString *)feedId sender:(id)sender {
+    feedId = [self feedIdWithoutSearchQuery:feedId];
+    NSString *urlString = [NSString stringWithFormat:@"%@/rss_feeds/statistics_embedded/%@", self.url, feedId];
+    NSURL *url = [NSURL URLWithString:urlString];
+    NSDictionary *feed = self.dictFeeds[feedId];
+    NSString *title = feed[@"feed_title"];
+    
+    [self showInAppBrowser:url withCustomTitle:title fromSender:sender];
+}
+
 - (void)openUserTagsStory:(id)sender {
     if (!self.userTagsViewController) {
         self.userTagsViewController = [[UserTagsViewController alloc] init];
@@ -1091,6 +1315,12 @@
 }
 
 - (void)clearNetworkManager {
+    for (NSString *networkOperationIdentifier in self.networkBackgroundTasks) {
+        [self endNetworkOperation:networkOperationIdentifier];
+    }
+    
+    self.networkBackgroundTasks = [NSMutableDictionary new];
+    
     [networkManager invalidateSessionCancelingTasks:YES];
     networkManager = [AFHTTPSessionManager manager];
     networkManager.responseSerializer = [AFJSONResponseSerializer serializer];
@@ -1107,8 +1337,158 @@
     [networkManager.requestSerializer setValue:UA forHTTPHeaderField:@"User-Agent"];
 }
 
+- (NSString *)beginNetworkOperation {
+    NSString *networkOperationIdentifier = [NSUUID UUID].UUIDString;
+    
+    UIBackgroundTaskIdentifier backgroundTaskIdentifier = [[UIApplication sharedApplication] beginBackgroundTaskWithExpirationHandler:^{
+        [self endNetworkOperation:networkOperationIdentifier];
+    }];
+    
+    if (backgroundTaskIdentifier != UIBackgroundTaskInvalid) {
+        self.networkBackgroundTasks[networkOperationIdentifier] = @(backgroundTaskIdentifier);
+    }
+    
+    return networkOperationIdentifier;
+}
+
+- (void)endNetworkOperation:(NSString *)networkOperationIdentifier {
+    UIBackgroundTaskIdentifier identifier = self.networkBackgroundTasks[networkOperationIdentifier].integerValue;
+    
+    if (identifier != UIBackgroundTaskInvalid) {
+        [[UIApplication sharedApplication] endBackgroundTask:identifier];
+    }
+    
+    [self.networkBackgroundTasks removeObjectForKey:networkOperationIdentifier];
+}
+
+- (void)safelyInvokeTarget:(id _Nonnull)target withSelector:(SEL _Nullable)selector passingObject:(id _Nullable)object {
+    if (selector == NULL) {
+        return;
+    }
+    
+    IMP imp = [target methodForSelector:selector];
+    void (*func)(id, SEL, id _Nullable) = (void *)imp;
+    func(target, selector, object);
+}
+
+- (void)GET:(NSString *)urlString
+ parameters:(id)parameters
+    success:(void (^)(NSURLSessionDataTask * _Nonnull, id _Nullable))success
+    failure:(void (^)(NSURLSessionDataTask * _Nullable, NSError * _Nonnull))failure {
+    NSString *networkOperationIdentifier = [self beginNetworkOperation];
+    
+    [networkManager GET:urlString parameters:parameters progress:nil success:^(NSURLSessionDataTask * _Nonnull task, id  _Nullable responseObject) {
+        if (success) {
+            success(task, responseObject);
+        }
+        
+        [self endNetworkOperation:networkOperationIdentifier];
+    } failure:^(NSURLSessionDataTask * _Nullable task, NSError * _Nonnull error) {
+        if (failure) {
+            failure(task, error);
+        }
+        
+        [self endNetworkOperation:networkOperationIdentifier];
+    }];
+}
+
+- (void)GET:(NSString *)urlString
+ parameters:(id)parameters
+     target:(id)target
+    success:(SEL)success
+    failure:(SEL)failure {
+    [self GET:urlString parameters:parameters success:^(NSURLSessionDataTask * _Nonnull task, id _Nullable responseObject) {
+        [self safelyInvokeTarget:target withSelector:success passingObject:responseObject];
+    } failure:^(NSURLSessionDataTask * _Nullable task, NSError * _Nonnull error) {
+        [self safelyInvokeTarget:target withSelector:failure passingObject:error];
+    }];
+}
+
+- (void)POST:(NSString *)urlString
+  parameters:(id)parameters
+     success:(void (^)(NSURLSessionDataTask * _Nonnull, id _Nullable))success
+     failure:(void (^)(NSURLSessionDataTask * _Nullable, NSError * _Nonnull))failure {
+    NSString *networkOperationIdentifier = [self beginNetworkOperation];
+    
+    [networkManager POST:urlString parameters:parameters progress:nil success:^(NSURLSessionDataTask * _Nonnull task, id  _Nullable responseObject) {
+        if (success) {
+            success(task, responseObject);
+        }
+        
+        [self endNetworkOperation:networkOperationIdentifier];
+    } failure:^(NSURLSessionDataTask * _Nullable task, NSError * _Nonnull error) {
+        if (failure) {
+            failure(task, error);
+        }
+        
+        [self endNetworkOperation:networkOperationIdentifier];
+    }];
+}
+
+- (void)POST:(NSString *)urlString
+ parameters:(id)parameters
+     target:(id)target
+    success:(SEL)success
+    failure:(SEL)failure {
+    [self POST:urlString parameters:parameters success:^(NSURLSessionDataTask * _Nonnull task, id _Nullable responseObject) {
+        [self safelyInvokeTarget:target withSelector:success passingObject:responseObject];
+    } failure:^(NSURLSessionDataTask * _Nullable task, NSError * _Nonnull error) {
+        [self safelyInvokeTarget:target withSelector:failure passingObject:error];
+    }];
+}
+
+- (NSHTTPCookie *)sessionIdCookie {
+    NSURL *url = [NSURL URLWithString:self.url];
+    NSArray *cookies = [[NSHTTPCookieStorage sharedHTTPCookieStorage] cookiesForURL: url];
+    
+    for (NSHTTPCookie *cookie in cookies) {
+        if ([cookie.name isEqualToString:@"newsblur_sessionid"]) {
+            return cookie;
+        }
+    }
+    
+    return nil;
+}
+
+- (void)prepareWebView:(WKWebView *)webView completionHandler:(void (^)(void))completion {
+    NSHTTPCookie *cookie = self.sessionIdCookie;
+    
+    if (cookie != nil) {
+        [webView.configuration.websiteDataStore.httpCookieStore setCookie:cookie completionHandler:completion];
+    } else {
+        completion();
+    }
+}
 
 #pragma mark -
+
+- (void)loadFolder:(NSString *)folder feedID:(NSString *)feedIdStr {
+    feedIdStr = [self feedIdWithoutSearchQuery:feedIdStr];
+    NSDictionary *feed;
+    storiesCollection.isReadView = NO;
+    if ([self isSocialFeed:feedIdStr]) {
+        feed = [dictSocialFeeds objectForKey:feedIdStr];
+        storiesCollection.isSocialView = YES;
+        storiesCollection.isSavedView = NO;
+    } else if ([self isSavedFeed:feedIdStr]) {
+        feed = [dictSavedStoryTags objectForKey:feedIdStr];
+        storiesCollection.isSocialView = NO;
+        storiesCollection.isSavedView = YES;
+        storiesCollection.activeSavedStoryTag = [feed objectForKey:@"tag"];
+    } else {
+        feed = [dictFeeds objectForKey:feedIdStr];
+        storiesCollection.isSocialView = NO;
+        storiesCollection.isSavedView = NO;
+    }
+    
+    [storiesCollection setActiveFeed:feed];
+    [storiesCollection setActiveFolder:folder];
+    readStories = [NSMutableArray array];
+    [folderCountCache removeObjectForKey:folder];
+    storiesCollection.activeClassifiers = [NSMutableDictionary dictionary];
+    
+    [self loadFeedDetailView];
+}
 
 - (void)reloadFeedsView:(BOOL)showLoader {
     [feedsViewController fetchFeedList:showLoader];
@@ -1146,9 +1526,12 @@
     }
     
     [self flushQueuedReadStories:NO withCallback:^{
-        [feedDetailViewController fetchFeedDetail:1 withCallback:nil];
+        [self flushQueuedSavedStories:NO withCallback:^{
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [feedDetailViewController fetchFeedDetail:1 withCallback:nil];
+            });
+        }];
     }];
-    
 }
 
 - (void)loadFeed:(NSString *)feedId
@@ -1274,6 +1657,10 @@
     return NO;
 }
 
+- (BOOL)isSavedSearch:(NSString *)feedIdStr {
+    return [feedIdStr containsString:@"?"];
+}
+
 - (BOOL)isSavedFeed:(NSString *)feedIdStr {
     return [feedIdStr startsWith:@"saved:"];
 }
@@ -1301,7 +1688,7 @@
 }
 
 - (NSArray *)feedIdsForFolderTitle:(NSString *)folderTitle {
-    if ([folderTitle isEqualToString:@"everything"]) {
+    if ([folderTitle isEqualToString:@"everything"] || [folderTitle isEqualToString:@"infrequent"]) {
         return @[folderTitle];
     } else {
         return self.dictFolders[folderTitle];
@@ -1328,7 +1715,7 @@
         NSLog(@"Logging out...");
         NSString *urlString = [NSString stringWithFormat:@"%@/reader/logout?api=1",
                           self.url];
-        [networkManager GET:urlString parameters:nil progress:nil success:^(NSURLSessionDataTask * _Nonnull task, id  _Nullable responseObject) {
+        [self GET:urlString parameters:nil success:^(NSURLSessionDataTask * _Nonnull task, id  _Nullable responseObject) {
             [MBProgressHUD hideHUDForView:self.view animated:YES];
             [self showLogin];
         } failure:^(NSURLSessionDataTask * _Nullable task, NSError * _Nonnull error) {
@@ -1371,10 +1758,10 @@
     }
 }
 
-- (void)refreshUserProfile:(void(^)())callback {
+- (void)refreshUserProfile:(void(^)(void))callback {
     NSString *urlString = [NSString stringWithFormat:@"%@/social/load_user_profile",
                            self.url];
-    [networkManager GET:urlString parameters:nil progress:nil success:^(NSURLSessionDataTask * _Nonnull task, id  _Nullable responseObject) {
+    [self GET:urlString parameters:nil success:^(NSURLSessionDataTask * _Nonnull task, id  _Nullable responseObject) {
         self.dictUserProfile = [responseObject objectForKey:@"user_profile"];
         self.dictSocialServices = [responseObject objectForKey:@"services"];
         callback();
@@ -1385,7 +1772,9 @@
 }
 
 - (void)refreshFeedCount:(id)feedId {
-    [feedsViewController fadeFeed:feedId];
+//    [feedsViewController fadeFeed:feedId];
+    [feedsViewController redrawFeedCounts:feedId];
+    [feedsViewController refreshHeaderCounts];
 }
 
 - (void)loadRiverFeedDetailView:(FeedDetailViewController *)feedDetailView withFolder:(NSString *)folder {
@@ -1428,13 +1817,14 @@
                     }
                 }
             }
-        } else if ([folder isEqualToString:@"everything"]) {
+        } else if ([folder isEqualToString:@"everything"] || [folder isEqualToString:@"infrequent"]) {
             feedDetailView.storiesCollection.isRiverView = YES;
             // add all the feeds from every NON blurblog folder
-            [feedDetailView.storiesCollection setActiveFolder:@"everything"];
+            [feedDetailView.storiesCollection setActiveFolder:folder];
             for (NSString *folderName in self.feedsViewController.activeFeedLocations) {
                 if ([folderName isEqualToString:@"river_blurblogs"]) continue;
                 if ([folderName isEqualToString:@"read_stories"]) continue;
+                if ([folderName isEqualToString:@"saved_searches"]) continue;
                 if ([folderName isEqualToString:@"saved_stories"]) continue;
                 NSArray *originalFolder = [self.dictFolders objectForKey:folderName];
                 NSArray *folderFeeds = [self.feedsViewController.activeFeedLocations objectForKey:folderName];
@@ -1450,6 +1840,9 @@
             if ([folder isEqualToString:@"saved_stories"] || [folderName isEqualToString:@"saved_stories"]) {
                 feedDetailView.storiesCollection.isSavedView = YES;
                 [feedDetailView.storiesCollection setActiveFolder:@"saved_stories"];
+            } else if ([folder isEqualToString:@"saved_searches"] || [folderName isEqualToString:@"saved_searches"]) {
+                feedDetailView.storiesCollection.isSavedView = YES;
+                [feedDetailView.storiesCollection setActiveFolder:@"saved_searches"];
             } else if ([folder isEqualToString:@"read_stories"] || [folderName isEqualToString:@"read_stories"]) {
                 feedDetailView.storiesCollection.isReadView = YES;
                 [feedDetailView.storiesCollection setActiveFolder:@"read_stories"];
@@ -1478,7 +1871,7 @@
         [self.folderCountCache removeObjectForKey:feedDetailView.storiesCollection.activeFolder];
     }
     
-    if (feedDetailView == feedDetailViewController) {
+    if (feedDetailView == feedDetailViewController && feedDetailView.navigationController == nil) {
         UIBarButtonItem *newBackButton = [[UIBarButtonItem alloc] initWithTitle: @"All"
                                                                           style: UIBarButtonItemStylePlain
                                                                          target: nil
@@ -1494,7 +1887,11 @@
     
     if (!transferFromDashboard) {
         [self flushQueuedReadStories:NO withCallback:^{
-            [feedDetailView fetchRiver];
+            [self flushQueuedSavedStories:NO withCallback:^{
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [feedDetailView fetchRiver];
+                });
+            }];
         }];
     } else {
         [feedDetailView reloadData];
@@ -1529,7 +1926,7 @@
 }
 
 - (void)adjustStoryDetailWebView {
-    // change UIWebView
+    // change the web view
     [storyPageControl.currentPage changeWebViewWidth];
     [storyPageControl.nextPage changeWebViewWidth];
     [storyPageControl.previousPage changeWebViewWidth];
@@ -1710,33 +2107,69 @@
         return;
     } else if ([storyBrowser isEqualToString:@"firefox"]) {
         NSString *encodedURL = [url.absoluteString stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLHostAllowedCharacterSet]];
-        NSString *firefoxURL = [NSString stringWithFormat:@"%@%@", @"firefox://?url=", encodedURL];
+        NSString *firefoxURL = [NSString stringWithFormat:@"%@%@", @"firefox://open-url?url=", encodedURL];
         [[UIApplication sharedApplication] openURL:[NSURL URLWithString:firefoxURL] options:@{} completionHandler:nil];
-    } else if ([storyBrowser isEqualToString:@"inappsafari"]) {
-        self.safariViewController = [[SFSafariViewController alloc] initWithURL:url
-                                                        entersReaderIfAvailable:NO];
-        self.safariViewController.delegate = self;
-        [navigationController presentViewController:self.safariViewController animated:YES completion:nil];
-    } else {
-        if (!originalStoryViewController) {
-            originalStoryViewController = [[OriginalStoryViewController alloc] init];
+    } else if ([storyBrowser isEqualToString:@"edge"]){
+        NSString *edgeURL;
+        NSRange prefix = [[url absoluteString] rangeOfString: @"http"];
+        
+        if (NSNotFound != prefix.location) {
+            edgeURL = [[url absoluteString]
+                        stringByReplacingCharactersInRange: prefix
+                        withString: @"microsoft-edge-http"];
         }
         
-        self.activeOriginalStoryURL = url;
-        
-        if (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPad) {
-            [self.masterContainerViewController transitionToOriginalView];
-        } else {
-            if ([[navigationController viewControllers]
-                 containsObject:originalStoryViewController]) {
-                return;
-            }
-            [navigationController pushViewController:originalStoryViewController
-                                            animated:YES];
+        [[UIApplication sharedApplication] openURL:[NSURL URLWithString:edgeURL] options:@{} completionHandler:nil];
+    } else if ([storyBrowser isEqualToString:@"inappsafari"]) {
+        [self showSafariViewControllerWithURL:url useReader:NO];
+    } else if ([storyBrowser isEqualToString:@"inappsafarireader"]) {
+        [self showSafariViewControllerWithURL:url useReader:YES];
+    } else {
+        [self showInAppBrowser:url withCustomTitle:nil fromSender:nil];
+    }
+}
+
+- (void)showInAppBrowser:(NSURL *)url withCustomTitle:(NSString *)customTitle fromSender:(id)sender {
+    if (!originalStoryViewController) {
+        originalStoryViewController = [[OriginalStoryViewController alloc] init];
+    }
+    
+    self.activeOriginalStoryURL = url;
+    originalStoryViewController.customPageTitle = customTitle;
+    
+    if (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPad) {
+        if ([sender isKindOfClass:[UIBarButtonItem class]]) {
             [originalStoryViewController view]; // Force viewDidLoad
             [originalStoryViewController loadInitialStory];
+            [self showPopoverWithViewController:originalStoryViewController contentSize:CGSizeMake(600.0, 1000.0) barButtonItem:sender];
+        } else if ([sender isKindOfClass:[UITableViewCell class]]) {
+            UITableViewCell *cell = (UITableViewCell *)sender;
+            
+            [originalStoryViewController view]; // Force viewDidLoad
+            [originalStoryViewController loadInitialStory];
+            [self showPopoverWithViewController:originalStoryViewController contentSize:CGSizeMake(600.0, 1000.0) sourceView:cell sourceRect:cell.bounds];
+        } else {
+            [self.masterContainerViewController transitionToOriginalView];
         }
+    } else {
+        if ([[navigationController viewControllers]
+             containsObject:originalStoryViewController]) {
+            return;
+        }
+        [navigationController pushViewController:originalStoryViewController
+                                        animated:YES];
+        [originalStoryViewController view]; // Force viewDidLoad
+        [originalStoryViewController loadInitialStory];
     }
+}
+
+- (void)showSafariViewControllerWithURL:(NSURL *)url useReader:(BOOL)useReader {
+    SFSafariViewControllerConfiguration *config = [SFSafariViewControllerConfiguration new];
+    config.entersReaderIfAvailable = useReader;
+    self.safariViewController = [[SFSafariViewController alloc] initWithURL:url configuration:config];
+    self.safariViewController.delegate = self;
+    [self.storyPageControl setNavigationBarHidden:NO];
+    [navigationController presentViewController:self.safariViewController animated:YES completion:nil];
 }
 
 - (BOOL)showingSafariViewController {
@@ -1751,15 +2184,15 @@
 }
 
 - (void)deferredSafariCleanup {
-    if (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPad) {
-        self.navigationController.view.frame = CGRectMake(self.navigationController.view.frame.origin.x, self.navigationController.view.frame.origin.y, self.isPortrait ? 270.0 : 370.0, self.navigationController.view.frame.size.height);
-    }
+//    if (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPad) {
+//        self.navigationController.view.frame = CGRectMake(self.navigationController.view.frame.origin.x, self.navigationController.view.frame.origin.y, self.isPortrait ? 270.0 : 370.0, self.navigationController.view.frame.size.height);
+//    }
     
     [self.storyPageControl reorientPages];
 }
 
 - (void)navigationController:(UINavigationController *)_navigationController willShowViewController:(UIViewController *)viewController animated:(BOOL)animated {
-    if ([viewController isKindOfClass:[SFSafariViewController class]] || [viewController isKindOfClass:[FontSettingsViewController class]] || [viewController isKindOfClass:[feedDetailMenuViewController class]]) {
+    if ([viewController isKindOfClass:[SFSafariViewController class]] || [viewController isKindOfClass:[FontSettingsViewController class]]) {
         [_navigationController setNavigationBarHidden:YES animated:YES];
     } else {
         [_navigationController setNavigationBarHidden:NO animated:YES];
@@ -1784,15 +2217,6 @@
     return _fontSettingsNavigationController;
 }
 
-- (UINavigationController *)feedDetailMenuNavigationController {
-    if (!_feedDetailMenuNavigationController) {
-        self.feedDetailMenuNavigationController = [[UINavigationController alloc] initWithRootViewController:self.feedDetailMenuViewController];
-        self.feedDetailMenuNavigationController.delegate = self;
-    }
-    
-    return _feedDetailMenuNavigationController;
-}
-
 - (void)closeOriginalStory {
     if (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPad) {
         [self.masterContainerViewController transitionFromOriginalView];
@@ -1809,6 +2233,134 @@
     } else {
         [self.navigationController popViewControllerAnimated:YES];
     }
+}
+
+#pragma mark -
+#pragma mark Siri Shortcuts
+
+- (void)handleUserActivity:(NSUserActivity *)activity {
+    if ([activity.activityType isEqualToString:@"com.newsblur.refresh"]) {
+        [self.navigationController popToRootViewControllerAnimated:NO];
+        [self.feedsViewController refreshFeedList];
+    } else if ([activity.activityType isEqualToString:@"com.newsblur.gotoFolder"]) {
+        NSString *folder = activity.userInfo[@"folder"];
+        
+        [self.navigationController popToRootViewControllerAnimated:NO];
+        [self loadRiverFeedDetailView:self.feedDetailViewController withFolder:folder];
+    } else if ([activity.activityType isEqualToString:@"com.newsblur.gotoFeed"]) {
+        NSString *folder = activity.userInfo[@"folder"];
+        NSString *feedID = activity.userInfo[@"feedID"];
+        
+        [self.navigationController popToRootViewControllerAnimated:NO];
+        [self loadFolder:folder feedID:feedID];
+    }
+}
+
+- (void)donateRefresh {
+    NSUserActivity *activity = [[NSUserActivity alloc] initWithActivityType:@"com.newsblur.refresh"];
+    
+    activity.title = @"Refresh NewsBlur";
+    activity.userInfo = @{};
+    activity.requiredUserInfoKeys = [NSSet new];
+    activity.eligibleForSearch = YES;
+    
+    if (@available(iOS 12.0, *)) {
+        activity.eligibleForPrediction = YES;
+        activity.suggestedInvocationPhrase = @"Refresh NewsBlur";
+    }
+    
+    CSSearchableItemAttributeSet *attributes = [[CSSearchableItemAttributeSet alloc] initWithItemContentType:(NSString *)kUTTypeItem];
+    
+    attributes.contentDescription = @"Fetch new stories in NewsBlur.";
+    
+    activity.contentAttributeSet = attributes;
+    
+    self.userActivity = activity;
+    [self.userActivity becomeCurrent];
+}
+
+- (void)donateFolder {
+    NSUserActivity *activity = [[NSUserActivity alloc] initWithActivityType:@"com.newsblur.gotoFolder"];
+    NSString *folder = storiesCollection.activeFolder;
+    NSString *title = storiesCollection.activeTitle;
+    
+    if (folder == nil || title == nil) {
+        return;
+    } else if ([folder isEqualToString:@"river_blurblogs"]) {
+        activity.title = @"Read All Shared Stories";
+    } else if ([folder isEqualToString:@"river_global"]) {
+        activity.title = @"Read Global Shared Stories";
+    } else if ([folder isEqualToString:@"everything"]) {
+        activity.title = @"Read All the Stories";
+    } else if ([folder isEqualToString:@"infrequent"]) {
+        activity.title = @"Read Infrequent Site Stories";
+    } else if (storiesCollection.isSavedView && storiesCollection.activeSavedStoryTag) {
+        activity.title = [NSString stringWithFormat:@"Read %@", storiesCollection.activeSavedStoryTag];
+    } else if ([folder isEqualToString:@"read_stories"]) {
+        activity.title = @"Re-read Stories";
+    } else if ([folder isEqualToString:@"saved_searches"]) {
+        activity.title = @"Re-read Saved Searches";
+    } else if ([folder isEqualToString:@"saved_stories"]) {
+        activity.title = @"Re-read Saved Stories";
+    } else {
+        activity.title = [NSString stringWithFormat:@"Read %@", title];
+    }
+    
+    activity.userInfo = @{@"folder" : folder};
+    activity.requiredUserInfoKeys = [NSSet setWithObject:@"folder"];
+    activity.eligibleForSearch = YES;
+    
+    if (@available(iOS 12.0, *)) {
+        activity.eligibleForPrediction = YES;
+        activity.suggestedInvocationPhrase = activity.title;
+    }
+    
+    CSSearchableItemAttributeSet *attributes = [[CSSearchableItemAttributeSet alloc] initWithItemContentType:(NSString *)kUTTypeItem];
+    
+    attributes.contentDescription = [NSString stringWithFormat:@"Go to the %@ folder in NewsBlur.", title];
+    
+    activity.contentAttributeSet = attributes;
+    
+    self.userActivity = activity;
+    [self.userActivity becomeCurrent];
+}
+
+- (void)donateFeed {
+    NSUserActivity *activity = [[NSUserActivity alloc] initWithActivityType:@"com.newsblur.gotoFeed"];
+    NSString *folder = storiesCollection.activeFolder;
+    NSDictionary *feed = storiesCollection.activeFeed;
+    NSString *title = storiesCollection.activeTitle;
+    NSString *feedID = [NSString stringWithFormat:@"%@", feed[@"id"]];
+    
+    activity.title = [NSString stringWithFormat:@"Read %@", title];
+    activity.eligibleForSearch = YES;
+    
+    if (folder != nil) {
+        activity.userInfo = @{@"folder" : folder, @"feedID" : feedID};
+        activity.requiredUserInfoKeys = [NSSet setWithArray:@[@"folder", @"feedID"]];
+    } else {
+        activity.userInfo = @{@"feedID" : feedID};
+        activity.requiredUserInfoKeys = [NSSet setWithArray:@[@"feedID"]];
+    }
+    
+    if (@available(iOS 12.0, *)) {
+        activity.eligibleForPrediction = YES;
+        activity.suggestedInvocationPhrase = activity.title;
+    }
+    
+    CSSearchableItemAttributeSet *attributes = [[CSSearchableItemAttributeSet alloc] initWithItemContentType:(NSString *)kUTTypeItem];
+    BOOL isSocial = [self isSocialFeed:feedID];
+    BOOL isSaved = [self isSavedFeed:feedID];
+    UIImage *thumbnailImage = [self getFavicon:feedID isSocial:isSocial isSaved:isSaved];
+    UIImage *scaledImage = [Utilities imageWithImage:thumbnailImage convertToSize:CGSizeMake(128, 128)];
+    
+    attributes.contentDescription = [NSString stringWithFormat:@"Go to the %@ feed in NewsBlur.", title];
+    attributes.thumbnailData = UIImagePNGRepresentation(scaledImage);
+    
+    activity.contentAttributeSet = attributes;
+    
+    self.userActivity = activity;
+    [self.userActivity becomeCurrent];
 }
 
 #pragma mark - Text View
@@ -1931,7 +2483,9 @@
                (!folderName && [storiesCollection.activeFolder isEqual:@"river_global"])) {
         total = 0;
     } else if ([folderName isEqual:@"everything"] ||
-               (!folderName && [storiesCollection.activeFolder isEqual:@"everything"])) {
+               [folderName isEqual:@"infrequent"] ||
+               (!folderName && ([storiesCollection.activeFolder isEqual:@"everything"] ||
+                                [storiesCollection.activeFolder isEqual:@"infrequent"]))) {
         // TODO: Fix race condition where self.dictUnreadCounts can be changed while being updated.
         for (id feedId in self.dictUnreadCounts) {
             total += [self unreadCountForFeed:feedId];
@@ -1989,7 +2543,9 @@
             (!folderName && [storiesCollection.activeFolder isEqual:@"river_global"])) {
         // Nothing for global
     } else if ([folderName isEqual:@"everything"] ||
-               (!folderName && [storiesCollection.activeFolder isEqual:@"everything"])) {
+               [folderName isEqual:@"infrequent"] ||
+               (!folderName && ([storiesCollection.activeFolder isEqual:@"everything"] ||
+                                [storiesCollection.activeFolder isEqual:@"infrequent"]))) {
         for (NSArray *folder in [self.dictFolders allValues]) {
             for (id feedId in folder) {
                 if ([feedId isKindOfClass:[NSString class]] && [feedId startsWith:@"saved:"]) {
@@ -2061,7 +2617,7 @@
 #pragma mark Mark as read
 
 - (void)markActiveFolderAllRead {
-    if ([storiesCollection.activeFolder isEqual:@"everything"]) {
+    if ([storiesCollection.activeFolder isEqual:@"everything"] || [storiesCollection.activeFolder isEqual:@"infrequent"]) {
         for (NSString *folderName in self.dictFoldersArray) {
             for (id feedId in [self.dictFolders objectForKey:folderName]) {
                 [self markFeedAllRead:feedId];
@@ -2170,13 +2726,13 @@
     }
 }
 
-- (void)markStoryAsRead:(NSString *)storyHash inFeed:(NSString *)feed withCallback:(void(^)())callback {
+- (void)markStoryAsRead:(NSString *)storyHash inFeed:(NSString *)feed withCallback:(void(^)(void))callback {
     NSString *urlString = [NSString stringWithFormat:@"%@/reader/mark_story_hashes_as_read",
                            self.url];
     NSMutableDictionary *params = [NSMutableDictionary dictionary];
     [params setObject:storyHash forKey:@"story_hash"];
     
-    [networkManager POST:urlString parameters:params progress:nil success:^(NSURLSessionDataTask * _Nonnull task, id  _Nullable responseObject) {
+    [self POST:urlString parameters:params success:^(NSURLSessionDataTask * _Nonnull task, id  _Nullable responseObject) {
         NSLog(@"Marked as read: %@", storyHash);
         callback();
     } failure:^(NSURLSessionDataTask * _Nullable task, NSError * _Nonnull error) {
@@ -2188,13 +2744,13 @@
     }];
 }
 
-- (void)markStoryAsStarred:(NSString *)storyHash withCallback:(void(^)())callback {
+- (void)markStoryAsStarred:(NSString *)storyHash withCallback:(void(^)(void))callback {
     NSString *urlString = [NSString stringWithFormat:@"%@/reader/mark_story_hash_as_starred",
                            self.url];
     NSMutableDictionary *params = [NSMutableDictionary dictionary];
     [params setObject:storyHash forKey:@"story_hash"];
     
-    [networkManager POST:urlString parameters:params progress:nil success:^(NSURLSessionDataTask * _Nonnull task, id  _Nullable responseObject) {
+    [self POST:urlString parameters:params success:^(NSURLSessionDataTask * _Nonnull task, id  _Nullable responseObject) {
         NSLog(@"Marked as starred: %@", storyHash);
         callback();
     } failure:^(NSURLSessionDataTask * _Nullable task, NSError * _Nonnull error) {
@@ -2396,6 +2952,34 @@
     return savedStories;
 }
 
+- (NSArray *)updateSavedSearches:(NSDictionary *)results {
+    NSArray *savedSearches = results[@"saved_searches"];
+    NSInteger count = 0;
+    NSMutableArray *feedIds = [NSMutableArray arrayWithCapacity:savedSearches.count];
+    
+    for (NSDictionary *search in savedSearches) {
+        NSString *feedStr = search[@"feed_id"];
+        NSString *prefix = @"feed:";
+        
+        if ([feedStr hasPrefix:prefix]) {
+            feedStr = [feedStr substringFromIndex:prefix.length];
+        }
+        
+        if ([feedStr isEqualToString:@"river:"]) {
+            feedStr = @"river:everything";
+        }
+        
+        NSString *feedId = [NSString stringWithFormat:@"%@?%@", feedStr, search[@"query"]];
+        
+        [feedIds addObject:feedId];
+        count++;
+    }
+    
+    self.savedSearchesCount = count;
+    
+    return feedIds;
+}
+
 - (void)renameFeed:(NSString *)newTitle {
     NSMutableDictionary *newActiveFeed = [storiesCollection.activeFeed mutableCopy];
     [newActiveFeed setObject:newTitle forKey:@"feed_title"];
@@ -2431,7 +3015,11 @@
     self.markReadMenuViewController.olderNewerStory = olderNewerStory;
     self.markReadMenuViewController.extraItems = extraItems;
     self.markReadMenuViewController.completionHandler = completionHandler;
-
+    
+    if (@available(iOS 13.0, *)) {
+        self.markReadMenuViewController.menuTableView.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentAlways;
+    }
+    
     [self showPopoverWithViewController:self.markReadMenuViewController contentSize:CGSizeZero barButtonItem:barButtonItem sourceView:sourceView sourceRect:sourceRect permittedArrowDirections:UIPopoverArrowDirectionAny];
 }
 
@@ -2542,7 +3130,8 @@
 
 - (NSString *)extractParentFolderName:(NSString *)folderName {
     if ([folderName containsString:@"Top Level"] ||
-        [folderName isEqual:@"everything"]) {
+        [folderName isEqual:@"everything"] ||
+        [folderName isEqual:@"infrequent"]) {
         folderName = @"";
     }
     
@@ -2559,7 +3148,8 @@
 
 - (NSString *)extractFolderName:(NSString *)folderName {
     if ([folderName containsString:@"Top Level"] ||
-        [folderName isEqual:@"everything"]) {
+        [folderName isEqual:@"everything"] ||
+        [folderName isEqual:@"infrequent"]) {
         folderName = @"";
     }
     if ([folderName containsString:@" - "]) {
@@ -2593,7 +3183,45 @@
     return uniqueFolderNames;
 }
 
+- (NSString *)feedIdWithoutSearchQuery:(NSString *)feedId {
+    NSRange range = [feedId rangeOfString:@"?"];
+    
+    if (range.location == NSNotFound) {
+        return feedId;
+    } else {
+        return [feedId substringToIndex:range.location];
+    }
+}
+
+- (NSString *)searchQueryForFeedId:(NSString *)feedId {
+    NSRange range = [feedId rangeOfString:@"?"];
+    
+    if (range.location == NSNotFound) {
+        return nil;
+    } else {
+        return [feedId substringFromIndex:range.location + range.length];
+    }
+}
+
+- (NSString *)searchFolderForFeedId:(NSString *)feedId {
+    NSString *prefix = @"river:";
+    
+    if (![feedId hasPrefix:prefix]) {
+        return nil;
+    }
+    
+    return [[self feedIdWithoutSearchQuery:feedId] substringFromIndex:prefix.length];
+}
+
+- (NSDictionary *)getFeedWithId:(id)feedId {
+     NSString *feedIdStr = [NSString stringWithFormat:@"%@", feedId];
+    
+    return [self getFeed:feedIdStr];
+}
+
 - (NSDictionary *)getFeed:(NSString *)feedId {
+    feedId = [self feedIdWithoutSearchQuery:feedId];
+    
     NSDictionary *feed;
     if (storiesCollection.isSocialView ||
         storiesCollection.isSocialRiverView ||
@@ -2651,6 +3279,18 @@
     CGContextDrawLinearGradient(context, gradient, startPoint, endPoint, 0);
     CGGradientRelease(gradient);
     UIGraphicsPopContext();
+}
+
++ (UIView *)makeSimpleGradientView:(CGRect)rect startColor:(UIColor *)startColor endColor:(UIColor *)endColor {
+    UIView *gradientView = [[UIView alloc] initWithFrame:rect];
+    
+    CAGradientLayer *gradient = [CAGradientLayer layer];
+    gradient.frame = CGRectMake(0, 0, rect.size.width, rect.size.height);
+    gradient.colors = @[(id)[startColor CGColor], (id)[endColor CGColor]];
+    
+    [gradientView.layer addSublayer:gradient];
+    
+    return gradientView;
 }
 
 + (UIColor *)faviconColor:(NSString *)colorString {
@@ -2747,7 +3387,7 @@
         [gradientView addSubview:titleImageView];
     } else {
         gradientView = [NewsBlurAppDelegate 
-                        makeGradientView:CGRectMake(0, -1, rect.size.width, 10)
+                        makeGradientView:CGRectMake(0, rect.origin.y, rect.size.width, 10)
                         // hard coding the 1024 as a hack for window.frame.size.width
                         startColor:[feed objectForKey:@"favicon_fade"]
                         endColor:[feed objectForKey:@"favicon_color"]
@@ -2770,6 +3410,9 @@
     } else if (storiesCollection.isRiverView &&
                [storiesCollection.activeFolder isEqualToString:@"everything"]) {
         titleLabel.text = [NSString stringWithFormat:@"     All Stories"];
+    } else if (storiesCollection.isRiverView &&
+               [storiesCollection.activeFolder isEqualToString:@"infrequent"]) {
+        titleLabel.text = [NSString stringWithFormat:@"     Infrequent Site Stories"];
     } else if (storiesCollection.isSavedView && storiesCollection.activeSavedStoryTag) {
         if (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPhone) {
             titleLabel.text = [NSString stringWithFormat:@"     %@", storiesCollection.activeSavedStoryTag];
@@ -2809,6 +3452,9 @@
         } else if (storiesCollection.isRiverView &&
                    [storiesCollection.activeFolder isEqualToString:@"everything"]) {
             titleImage = [UIImage imageNamed:@"ak-icon-allstories.png"];
+        } else if (storiesCollection.isRiverView &&
+                   [storiesCollection.activeFolder isEqualToString:@"infrequent"]) {
+            titleImage = [UIImage imageNamed:@"ak-icon-allstories.png"];
         } else if (storiesCollection.isSavedView && storiesCollection.activeSavedStoryTag) {
             titleImage = [UIImage imageNamed:@"tag.png"];
         } else if ([storiesCollection.activeFolder isEqualToString:@"read_stories"]) {
@@ -2827,6 +3473,46 @@
     [titleLabel sizeToFit];
 
     return titleLabel;
+}
+
+- (NSString *)folderTitle:(NSString *)folder {
+    if ([folder isEqualToString:@"river_blurblogs"]) {
+        return @"All Shared Stories";
+    } else if ([folder isEqualToString:@"river_global"]) {
+        return @"Global Shared Stories";
+    } else if ([folder isEqualToString:@"everything"]) {
+        return @"All Stories";
+    } else if ([folder isEqualToString:@"infrequent"]) {
+        return @"Infrequent Site Stories";
+    } else if ([folder isEqualToString:@"read_stories"]) {
+        return @"Read Stories";
+    } else if ([folder isEqualToString:@"saved_searches"]) {
+        return @"Saved Searches";
+    } else if ([folder isEqualToString:@"saved_stories"]) {
+        return @"Saved Stories";
+    } else {
+        return folder;
+    }
+}
+
+- (UIImage *)folderIcon:(NSString *)folder {
+    if ([folder isEqualToString:@"river_global"]) {
+        return [UIImage imageNamed:@"ak-icon-global.png"];
+    } else if ([folder isEqualToString:@"river_blurblogs"]) {
+        return [UIImage imageNamed:@"ak-icon-blurblogs.png"];
+    } else if ([folder isEqualToString:@"everything"]) {
+        return [UIImage imageNamed:@"ak-icon-allstories.png"];
+    } else if ([folder isEqualToString:@"infrequent"]) {
+        return [UIImage imageNamed:@"ak-icon-allstories.png"];
+    } else if ([folder isEqualToString:@"read_stories"]) {
+        return [UIImage imageNamed:@"g_icn_folder_read.png"];
+    } else if ([folder isEqualToString:@"saved_searches"]) {
+        return [UIImage imageNamed:@"g_icn_search.png"];
+    } else if ([folder isEqualToString:@"saved_stories"]) {
+        return [UIImage imageNamed:@"clock.png"];
+    } else {
+        return [UIImage imageNamed:@"g_icn_folder.png"];
+    }
 }
 
 - (void)saveFavicon:(UIImage *)image feedId:(NSString *)filename {
@@ -2911,7 +3597,7 @@
      @"remove_like_author"];
     [params setObject:feedId forKey:@"feed_id"];
     
-    [networkManager POST:urlString parameters:params progress:nil success:^(NSURLSessionDataTask * _Nonnull task, id  _Nullable responseObject) {
+    [self POST:urlString parameters:params success:^(NSURLSessionDataTask * _Nonnull task, id  _Nullable responseObject) {
         [self.feedsViewController refreshFeedList:feedId];
     } failure:^(NSURLSessionDataTask * _Nullable task, NSError * _Nonnull error) {
         [self failedClassifierSave:task];
@@ -2955,7 +3641,7 @@
      @"remove_like_tag"];
     [params setObject:feedId forKey:@"feed_id"];
     
-    [networkManager POST:urlString parameters:params progress:nil success:^(NSURLSessionDataTask * _Nonnull task, id  _Nullable responseObject) {
+    [self POST:urlString parameters:params success:^(NSURLSessionDataTask * _Nonnull task, id  _Nullable responseObject) {
         [self.feedsViewController refreshFeedList:feedId];
     } failure:^(NSURLSessionDataTask * _Nullable task, NSError * _Nonnull error) {
         [self failedClassifierSave:task];
@@ -3003,7 +3689,7 @@
      @"remove_like_title"];
     [params setObject:feedId forKey:@"feed_id"];
     
-    [networkManager POST:urlString parameters:params progress:nil success:^(NSURLSessionDataTask * _Nonnull task, id  _Nullable responseObject) {
+    [self POST:urlString parameters:params success:^(NSURLSessionDataTask * _Nonnull task, id  _Nullable responseObject) {
         [self.feedsViewController refreshFeedList:feedId];
     } failure:^(NSURLSessionDataTask * _Nullable task, NSError * _Nonnull error) {
         [self failedClassifierSave:task];
@@ -3045,7 +3731,7 @@
                           @"remove_like_feed"];
     [params setObject:feedId forKey:@"feed_id"];
     
-    [networkManager POST:urlString parameters:params progress:nil success:^(NSURLSessionDataTask * _Nonnull task, id  _Nullable responseObject) {
+    [self POST:urlString parameters:params success:^(NSURLSessionDataTask * _Nonnull task, id  _Nullable responseObject) {
         [self.feedsViewController refreshFeedList:feedId];
     } failure:^(NSURLSessionDataTask * _Nullable task, NSError * _Nonnull error) {
         [self failedRequest:task.response];
@@ -3129,28 +3815,43 @@
 }
 
 - (void)setupDatabase:(FMDatabase *)db force:(BOOL)force {
-    if ([self databaseSchemaVersion:db] < CURRENT_DB_VERSION || force) {
+    NSUInteger databaseVersion = [self databaseSchemaVersion:db];
+    
+    if (databaseVersion < CURRENT_DB_VERSION || force) {
         // FMDB cannot execute this query because FMDB tries to use prepared statements
         [db closeOpenResultSets];
-        [db executeUpdate:@"drop table if exists `stories`"];
-        [db executeUpdate:@"drop table if exists `unread_hashes`"];
-        [db executeUpdate:@"drop table if exists `accounts`"];
-        [db executeUpdate:@"drop table if exists `unread_counts`"];
-        [db executeUpdate:@"drop table if exists `cached_images`"];
-        [db executeUpdate:@"drop table if exists `users`"];
-        //        [db executeUpdate:@"drop table if exists `queued_read_hashes`"]; // Nope, don't clear this.
-        //        [db executeUpdate:@"drop table if exists `queued_saved_hashes`"]; // Nope, don't clear this.
+        
+        // Perform just the needed updates (in the future, if any of these table schemas change, move their drop statement to a new block below)
+        if (databaseVersion < 35) {
+            [db executeUpdate:@"drop table if exists `stories`"];
+            [db executeUpdate:@"drop table if exists `unread_hashes`"];
+            [db executeUpdate:@"drop table if exists `accounts`"];
+            [db executeUpdate:@"drop table if exists `unread_counts`"];
+            [db executeUpdate:@"drop table if exists `cached_images`"];
+            [db executeUpdate:@"drop table if exists `users`"];
+            //        [db executeUpdate:@"drop table if exists `queued_read_hashes`"]; // Nope, don't clear this.
+            //        [db executeUpdate:@"drop table if exists `queued_saved_hashes`"]; // Nope, don't clear this.
+            
+            NSFileManager *fileManager = [NSFileManager defaultManager];
+            NSArray *paths = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES);
+            NSString *cacheDirectory = [[paths objectAtIndex:0] stringByAppendingPathComponent:@"story_images"];
+            NSError *error = nil;
+            BOOL success = [fileManager removeItemAtPath:cacheDirectory error:&error];
+            if (!success || error) {
+                // something went wrong
+            }
+        }
+        
+        if (databaseVersion < 36) {
+            [db executeUpdate:@"drop table if exists `queued_saved_hashes`"];
+        }
+        
+        if (databaseVersion < 37) {
+            [db executeUpdate:@"drop table if exists `cached_text`"];
+        }
+        
         NSLog(@"Dropped db: %@", [db lastErrorMessage]);
         sqlite3_exec(db.sqliteHandle, [[NSString stringWithFormat:@"PRAGMA user_version = %d", CURRENT_DB_VERSION] UTF8String], NULL, NULL, NULL);
-        
-        NSFileManager *fileManager = [NSFileManager defaultManager];
-        NSArray *paths = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES);
-        NSString *cacheDirectory = [[paths objectAtIndex:0] stringByAppendingPathComponent:@"story_images"];
-        NSError *error = nil;
-        BOOL success = [fileManager removeItemAtPath:cacheDirectory error:&error];
-        if (!success || error) {
-            // something went wrong
-        }
     }
     NSString *createAccountsTable = [NSString stringWithFormat:@"create table if not exists accounts "
                                   "("
@@ -3222,9 +3923,24 @@
                                  "("
                                  " story_feed_id varchar(20),"
                                  " story_hash varchar(24),"
+                                 " saved boolean,"
+                                 " info_json text,"
                                  " UNIQUE(story_hash) ON CONFLICT IGNORE"
                                  ")"];
     [db executeUpdate:createSavedTable];
+    
+    NSString *createTextTable = [NSString stringWithFormat:@"create table if not exists cached_text "
+                                 "("
+                                 " story_feed_id varchar(20),"
+                                 " story_hash varchar(24),"
+                                 " story_timestamp number,"
+                                 " text_json text"
+                                 ")"];
+    [db executeUpdate:createTextTable];
+    NSString *indexTextFeedId = @"CREATE INDEX IF NOT EXISTS cached_text_story_feed_id ON cached_text (story_feed_id)";
+    [db executeUpdate:indexTextFeedId];
+    NSString *indexTextStoryHash = @"CREATE INDEX IF NOT EXISTS cached_text_story_hash ON cached_text (story_hash)";
+    [db executeUpdate:indexTextStoryHash];
     
     NSString *createImagesTable = [NSString stringWithFormat:@"create table if not exists cached_images "
                                    "("
@@ -3298,6 +4014,12 @@
 //    NSLog(@"Done start offline fetch stories");
 }
 
+- (void)startOfflineFetchText {
+    OfflineFetchText *operationFetchText = [[OfflineFetchText alloc] init];
+    
+    [offlineQueue addOperation:operationFetchText];
+}
+
 - (void)startOfflineFetchImages {
     OfflineFetchImages *operationFetchImages = [[OfflineFetchImages alloc] init];
     
@@ -3340,16 +4062,18 @@
 
 - (void)markScrollPosition:(NSInteger)position inStory:(NSDictionary *)story {
     if (position < 0) return;
+    __block NSNumber *positionNum = @(position);
+    __block NSDictionary *storyDict = story;
     
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW,
                                              (unsigned long)NULL), ^(void) {
         [self.database inDatabase:^(FMDatabase *db) {
-//            NSLog(@"Saving scroll %ld in %@-%@", position, [story objectForKey:@"story_hash"], [story objectForKey:@"story_title"]);
+            NSLog(@"Saving scroll %ld in %@-%@", (long)[positionNum integerValue], [storyDict objectForKey:@"story_hash"], [storyDict objectForKey:@"story_title"]);
             [db executeUpdate:@"INSERT INTO story_scrolls (story_feed_id, story_hash, story_timestamp, scroll) VALUES (?, ?, ?, ?)",
-             [story objectForKey:@"story_feed_id"],
-             [story objectForKey:@"story_hash"],
-             [story objectForKey:@"story_timestamp"],
-             [NSNumber numberWithInteger:position]];
+             [storyDict objectForKey:@"story_feed_id"],
+             [storyDict objectForKey:@"story_hash"],
+             [storyDict objectForKey:@"story_timestamp"],
+             positionNum];
         }];
     });
 }
@@ -3392,7 +4116,7 @@
     return storyQueued;
 }
 
-- (void)flushQueuedReadStories:(BOOL)forceCheck withCallback:(void(^)())callback {
+- (void)flushQueuedReadStories:(BOOL)forceCheck withCallback:(void(^)(void))callback {
     if (self.feedsViewController.isOffline) {
         if (callback) callback();
         return;
@@ -3427,7 +4151,7 @@
     }
 }
 
-- (void)syncQueuedReadStories:(FMDatabase *)db withStories:(NSDictionary *)hashes withCallback:(void(^)())callback {
+- (void)syncQueuedReadStories:(FMDatabase *)db withStories:(NSDictionary *)hashes withCallback:(void(^)(void))callback {
     NSString *urlString = [NSString stringWithFormat:@"%@/reader/mark_feed_stories_as_read",
                            self.url];
     NSMutableArray *completedHashes = [NSMutableArray array];
@@ -3439,7 +4163,7 @@
     NSMutableDictionary *params = [NSMutableDictionary dictionary];
     [params setObject:[hashes JSONRepresentation] forKey:@"feeds_stories"];
     
-    [networkManager POST:urlString parameters:params progress:nil success:^(NSURLSessionDataTask * _Nonnull task, id  _Nullable responseObject) {
+    [self POST:urlString parameters:params success:^(NSURLSessionDataTask * _Nonnull task, id  _Nullable responseObject) {
         NSLog(@"Completed clearing %@ hashes", completedHashesStr);
         [db executeUpdate:[NSString stringWithFormat:@"DELETE FROM queued_read_hashes "
                            "WHERE story_hash in (\"%@\")", completedHashesStr]];
@@ -3465,6 +4189,199 @@
         NSString *deleteSql = [NSString stringWithFormat:@"DELETE FROM queued_read_hashes "
                                "WHERE story_hash not in (%@)", unreadSql];
         [db executeUpdate:deleteSql];
+    }];
+}
+
+
+- (void)queueSavedStory:(NSDictionary *)story {
+    NSString *storyHash = [story objectForKey:@"story_hash"];
+    NSString *storyFeedId = [story objectForKey:@"story_feed_id"];
+    
+    if ([self dequeueSavedStoryHash:storyHash inFeed:storyFeedId]) {
+        return;
+    }
+    
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT,
+                                             (unsigned long)NULL), ^(void) {
+        [self.database inTransaction:^(FMDatabase *db, BOOL *rollback) {
+            BOOL isSaved = [[story objectForKey:@"starred"] boolValue];
+            NSArray *userTags = [[story objectForKey:@"user_tags"] copy];
+            NSDictionary *info = @{@"user_tags" : userTags}; // A dictionary to enable easily adding future properties (highlights?)
+            
+            [db executeUpdate:@"INSERT INTO queued_saved_hashes "
+             "(story_feed_id, story_hash, saved, info_json) VALUES "
+             "(?, ?, ?, ?)", storyFeedId, storyHash, @(isSaved), info.JSONRepresentation];
+        }];
+    });
+    self.hasQueuedSavedStories = YES;
+}
+
+- (BOOL)dequeueSavedStoryHash:(NSString *)storyHash inFeed:(NSString *)storyFeedId {
+    __block BOOL storyQueued = NO;
+    
+    [self.database inDatabase:^(FMDatabase *db) {
+        FMResultSet *stories = [db executeQuery:@"SELECT * FROM queued_saved_hashes "
+                                "WHERE story_hash = ? AND story_feed_id = ? LIMIT 1",
+                                storyHash, storyFeedId];
+        while ([stories next]) {
+            storyQueued = YES;
+            break;
+        }
+        [stories close];
+        if (storyQueued) {
+            [db executeUpdate:@"DELETE FROM queued_saved_hashes "
+             "WHERE story_hash = ? AND story_feed_id = ?",
+             storyHash, storyFeedId];
+        }
+    }];
+    
+    return storyQueued;
+}
+
+- (void)flushQueuedSavedStories:(BOOL)forceCheck withCallback:(void(^)(void))callback {
+    if (self.feedsViewController.isOffline) {
+        if (callback) callback();
+        return;
+    }
+    
+    if (self.hasQueuedSavedStories || forceCheck) {
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW,
+                                                 (unsigned long)NULL), ^(void) {
+            [self.database inTransaction:^(FMDatabase *db, BOOL *rollback) {
+                FMResultSet *stories = [db executeQuery:@"SELECT * FROM queued_saved_hashes"];
+                __block NSMutableArray *requests = [NSMutableArray array];
+                
+                while ([stories next]) {
+                    NSString *storyFeedId = [NSString stringWithFormat:@"%@", [stories objectForColumnName:@"story_feed_id"]];
+                    NSString *storyHash = [stories objectForColumnName:@"story_hash"];
+                    BOOL saved = [stories boolForColumn:@"saved"];
+                    NSDictionary *info = [NSJSONSerialization
+                                          JSONObjectWithData:[[stories stringForColumn:@"info_json"]
+                                                              dataUsingEncoding:NSUTF8StringEncoding]
+                                          options:0 error:nil];
+                    
+                    NSMutableDictionary *params = [NSMutableDictionary dictionary];
+                    NSArray *userTags = info[@"user_tags"];
+                    
+                    [params setObject:storyHash forKey:@"story_id"];
+                    [params setObject:storyFeedId forKey:@"feed_id"];
+                    
+                    if (saved) {
+                        [params setObject:userTags forKey:@"user_tags"];
+                    }
+                    
+                    [requests addObject:params];
+                }
+                
+                [stories close];
+                
+                self.hasQueuedSavedStories = NO;
+                [self syncQueuedSavedStoriesRequests:requests withCallback:callback];
+            }];
+        });
+    } else {
+        if (callback) callback();
+    }
+}
+
+- (void)syncQueuedSavedStoriesRequests:(NSMutableArray *)requests withCallback:(void(^)(void))callback {
+    NSDictionary *params = requests.firstObject;
+    [requests removeObject:params];
+    
+    if (!params) {
+        if (callback) callback();
+        return;
+    }
+    
+    [self syncQueuedSavedStoryParams:params withCallback:^{
+        [self syncQueuedSavedStoriesRequests:requests withCallback:callback];
+    }];
+}
+
+- (void)syncQueuedSavedStoryParams:(NSDictionary *)params withCallback:(void(^)(void))callback {
+    BOOL saved = [params objectForKey:@"user_tags"] != nil;
+    NSString *endpoint = saved ? @"mark_story_as_starred" : @"mark_story_as_unstarred";
+    NSString *urlString = [NSString stringWithFormat:@"%@/reader/%@", self.url, endpoint];
+    
+    [self POST:urlString parameters:params success:^(NSURLSessionDataTask * _Nonnull task, id  _Nullable responseObject) {
+        NSString *storyHash = [params objectForKey:@"story_id"];
+        NSString *storyFeedId = [params objectForKey:@"feed_id"];
+        [self dequeueSavedStoryHash:storyHash inFeed:storyFeedId];
+        if (callback) callback();
+    } failure:^(NSURLSessionDataTask * _Nullable task, NSError * _Nonnull error) {
+        self.hasQueuedSavedStories = YES;
+        if (callback) callback();
+    }];
+}
+
+- (void)fetchTextForStory:(NSString *)storyHash inFeed:(NSString *)feedId checkCache:(BOOL)checkCache withCallback:(void(^)(NSString *))callback {
+    if (checkCache) {
+        [self privateGetCachedTextForStory:storyHash inFeed:feedId withCallback:^(NSString *text) {
+            if (text != nil) {
+                if (callback) {
+                    callback(text);
+                }
+            } else {
+                [self privateFetchTextForStory:storyHash inFeed:feedId withCallback:callback];
+            }
+        }];
+    } else {
+        [self privateFetchTextForStory:storyHash inFeed:feedId withCallback:callback];
+    }
+}
+
+- (void)privateGetCachedTextForStory:(NSString *)storyHash inFeed:(NSString *)feedId withCallback:(void(^)(NSString *))callback {
+    [self.database inDatabase:^(FMDatabase *db) {
+        NSString *text = nil;
+        FMResultSet *cursor = [db executeQuery:@"SELECT * FROM cached_text "
+                               "WHERE story_hash = ? AND story_feed_id = ? LIMIT 1",
+                               storyHash, feedId];
+        while ([cursor next]) {
+            NSDictionary *textCache = [cursor resultDictionary];
+            NSString *json = [textCache objectForKey:@"text_json"];
+            
+            if (json.length > 0) {
+                NSDictionary *results = [NSJSONSerialization
+                                         JSONObjectWithData:[json
+                                                             dataUsingEncoding:NSUTF8StringEncoding]
+                                         options:0 error:nil];
+                text = results[@"text"];
+                
+                if (text) {
+                    NSLog(@"Found cached text: %@ bytes", @(text.length));
+                } else {
+                    NSLog(@"Found cached failure");
+                }
+            }
+        }
+        [cursor close];
+        
+        if (callback) {
+            callback(text);
+        }
+    }];
+}
+
+- (void)privateFetchTextForStory:(NSString *)storyHash inFeed:(NSString *)feedId withCallback:(void(^)(NSString *))callback {
+    NSString *urlString = [NSString stringWithFormat:@"%@/rss_feeds/original_text", self.url];
+    NSMutableDictionary *params = [NSMutableDictionary dictionary];
+    [params setObject:storyHash forKey:@"story_id"];
+    [params setObject:feedId forKey:@"feed_id"];
+    
+    [self POST:urlString parameters:params success:^(NSURLSessionDataTask * _Nonnull task, id  _Nullable responseObject) {
+        NSString *text = [responseObject objectForKey:@"original_text"];
+        
+        if ([[responseObject objectForKey:@"failed"] boolValue]) {
+            text = nil;
+        }
+        
+        if (callback) {
+            callback(text);
+        }
+    } failure:^(NSURLSessionDataTask * _Nullable task, NSError * _Nonnull error) {
+        if (callback) {
+            callback(nil);
+        }
     }];
 }
 

@@ -2,11 +2,13 @@ package com.newsblur.database;
 
 import android.content.ContentValues;
 import android.content.Context;
-import android.content.Loader;
 import android.database.Cursor;
 import android.database.sqlite.SQLiteDatabase;
 import android.os.AsyncTask;
 import android.os.CancellationSignal;
+import android.support.annotation.Nullable;
+import android.support.v4.content.AsyncTaskLoader;
+import android.support.v4.content.Loader;
 import android.text.TextUtils;
 import android.util.Log;
 
@@ -19,6 +21,7 @@ import com.newsblur.domain.SocialFeed;
 import com.newsblur.domain.StarredCount;
 import com.newsblur.domain.Story;
 import com.newsblur.domain.UserProfile;
+import com.newsblur.network.domain.CommentResponse;
 import com.newsblur.network.domain.StoriesResponse;
 import com.newsblur.util.AppConstants;
 import com.newsblur.util.FeedSet;
@@ -148,6 +151,7 @@ public class BlurDatabaseHelper {
                         " AND " + DatabaseConstants.STORY_TEXT_STORY_HASH + " NOT IN " +
                         "( SELECT " + DatabaseConstants.READING_SESSION_STORY_HASH + " FROM " + DatabaseConstants.READING_SESSION_TABLE + ")",
                         new String[]{Long.toString(cutoffDate.getTime().getTime())});
+            com.newsblur.util.Log.d(this, "cleaned up ancient stories: " + count);
         }
     }
 
@@ -162,6 +166,7 @@ public class BlurDatabaseHelper {
                         " AND " + DatabaseConstants.STORY_TEXT_STORY_HASH + " NOT IN " +
                         "( SELECT " + DatabaseConstants.READING_SESSION_STORY_HASH + " FROM " + DatabaseConstants.READING_SESSION_TABLE + ")",
                         null);
+            com.newsblur.util.Log.d(this, "cleaned up read stories: " + count);
         }
     }
 
@@ -326,32 +331,30 @@ public class BlurDatabaseHelper {
                 }
 
                 // handle story content
-                List<ContentValues> socialStoryValues = new ArrayList<ContentValues>();
-                for (Story story : apiResponse.stories) {
-                    // pick a thumbnail for the story
-                    story.thumbnailUrl = Story.guessStoryThumbnailURL(story);
-                    // insert the story data
-                    ContentValues values = story.getValues();
-                    dbRW.insertWithOnConflict(DatabaseConstants.STORY_TABLE, null, values, SQLiteDatabase.CONFLICT_REPLACE);
-                    // if a story was shared by a user, also insert it into the social table under their userid, too
-                    for (String sharedUserId : story.sharedUserIds) {
-                        ContentValues socialValues = new ContentValues();
-                        socialValues.put(DatabaseConstants.SOCIALFEED_STORY_USER_ID, sharedUserId);
-                        socialValues.put(DatabaseConstants.SOCIALFEED_STORY_STORYID, values.getAsString(DatabaseConstants.STORY_ID));
-                        socialStoryValues.add(socialValues);
+                if (apiResponse.stories != null) {
+                    storiesloop: for (Story story : apiResponse.stories) {
+                        if ((story.storyHash == null) || (story.storyHash.length() < 1)) {
+                            // this is incredibly rare, but has been seen in crash reports at least twice.
+                            com.newsblur.util.Log.e(this, "story received without story hash: " + story.id);
+                            continue storiesloop;
+                        }
+                        insertSingleStoryExtSync(story);
+                        // if the story is being fetched for the immediate session, also add the hash to the session table
+                        if (forImmediateReading && story.isStoryVisibileInState(intelState)) {
+                            ContentValues sessionHashValues = new ContentValues();
+                            sessionHashValues.put(DatabaseConstants.READING_SESSION_STORY_HASH, story.storyHash);
+                            dbRW.insert(DatabaseConstants.READING_SESSION_TABLE, null, sessionHashValues);
+                        }
+                        impliedFeedId = story.feedId;
                     }
-                    // if the story is being fetched for the immediate session, also add the hash to the session table
-                    if (forImmediateReading && story.isStoryVisibileInState(intelState)) {
-                        ContentValues sessionHashValues = new ContentValues();
-                        sessionHashValues.put(DatabaseConstants.READING_SESSION_STORY_HASH, story.storyHash);
-                        dbRW.insert(DatabaseConstants.READING_SESSION_TABLE, null, sessionHashValues);
-                    }
-                    impliedFeedId = story.feedId;
                 }
-                if (socialStoryValues.size() > 0) {
-                    for(ContentValues values: socialStoryValues) {
-                        dbRW.insertWithOnConflict(DatabaseConstants.SOCIALFEED_STORY_MAP_TABLE, null, values, SQLiteDatabase.CONFLICT_REPLACE);
+                if (apiResponse.story != null) {
+                    if ((apiResponse.story.storyHash == null) || (apiResponse.story.storyHash.length() < 1)) {
+                        com.newsblur.util.Log.e(this, "story received without story hash: " + apiResponse.story.id);
+                        return;
                     }
+                    insertSingleStoryExtSync(apiResponse.story);
+                    impliedFeedId = apiResponse.story.feedId;
                 }
 
                 // handle classifiers
@@ -371,61 +374,128 @@ public class BlurDatabaseHelper {
                     }
                 }
 
-                // handle comments
-                List<ContentValues> commentValues = new ArrayList<ContentValues>();
-                List<ContentValues> replyValues = new ArrayList<ContentValues>();
-                // track which comments were seen, so replies can be cleared before re-insertion. there isn't
-                // enough data to de-dupe them for an insert/update operation
-                List<String> freshCommentIds = new ArrayList<String>();
-                for (Story story : apiResponse.stories) {
-                    for (Comment comment : story.publicComments) {
-                        comment.storyId = story.id;
-                        // we need a primary key for comments, so construct one
-                        comment.id = Comment.constructId(story.id, story.feedId, comment.userId);
-                        commentValues.add(comment.getValues());
-                        for (Reply reply : comment.replies) {
-                            reply.commentId = comment.id;
-                            reply.id = reply.constructId();
-                            replyValues.add(reply.getValues());
+                if (apiResponse.feedTags != null ) {
+                    List<String> feedTags = new ArrayList<String>(apiResponse.feedTags.length);
+                    for (String[] tuple : apiResponse.feedTags) {
+                        // the API returns a list of lists, but all we care about is the tag name/id which is the first item in the tuple
+                        if (tuple.length > 0) {
+                            feedTags.add(tuple[0]);
                         }
-                        freshCommentIds.add(comment.id);
                     }
-                    for (Comment comment : story.friendsComments) {
-                        comment.storyId = story.id;
-                        // we need a primary key for comments, so construct one
-                        comment.id = Comment.constructId(story.id, story.feedId, comment.userId);
-                        comment.byFriend = true;
-                        commentValues.add(comment.getValues());
-                        for (Reply reply : comment.replies) {
-                            reply.commentId = comment.id;
-                            reply.id = reply.constructId();
-                            replyValues.add(reply.getValues());
-                        }
-                        freshCommentIds.add(comment.id);
-                    }
-                    for (Comment comment : story.friendsShares) {
-                        comment.isPseudo = true;
-                        comment.storyId = story.id;
-                        // we need a primary key for comments, so construct one
-                        comment.id = Comment.constructId(story.id, story.feedId, comment.userId);
-                        comment.byFriend = true;
-                        commentValues.add(comment.getValues());
-                        for (Reply reply : comment.replies) {
-                            reply.commentId = comment.id;
-                            reply.id = reply.constructId();
-                            replyValues.add(reply.getValues());
-                        }
-                        freshCommentIds.add(comment.id);
-                    }
+                    putFeedTagsExtSync(impliedFeedId, feedTags);
                 }
-                // before inserting new replies, remove existing ones for the fetched comments
-                // NB: attempting to do this with a "WHERE col IN (vector)" for speed can cause errors on some versions of sqlite
-                for (String commentId : freshCommentIds) {
-                    dbRW.delete(DatabaseConstants.REPLY_TABLE, DatabaseConstants.REPLY_COMMENTID + " = ?", new String[]{commentId});
-                }
-                bulkInsertValuesExtSync(DatabaseConstants.COMMENT_TABLE, commentValues);
-                bulkInsertValuesExtSync(DatabaseConstants.REPLY_TABLE, replyValues);
 
+                if (apiResponse.feedAuthors != null ) {
+                    List<String> feedAuthors = new ArrayList<String>(apiResponse.feedAuthors.length);
+                    for (String[] tuple : apiResponse.feedAuthors) {
+                        // the API returns a list of lists, but all we care about is the author name/id which is the first item in the tuple
+                        if (tuple.length > 0) {
+                            feedAuthors.add(tuple[0]);
+                        }
+                    }
+                    putFeedAuthorsExtSync(impliedFeedId, feedAuthors);
+                }
+
+                dbRW.setTransactionSuccessful();
+            } finally {
+                dbRW.endTransaction();
+            }
+        }
+    }
+
+    private void insertSingleStoryExtSync(Story story) {
+        // pick a thumbnail for the story
+        story.thumbnailUrl = Story.guessStoryThumbnailURL(story);
+        // insert the story data
+        ContentValues values = story.getValues();
+        dbRW.insertWithOnConflict(DatabaseConstants.STORY_TABLE, null, values, SQLiteDatabase.CONFLICT_REPLACE);
+        // if a story was shared by a user, also insert it into the social table under their userid, too
+        for (String sharedUserId : story.sharedUserIds) {
+            ContentValues socialValues = new ContentValues();
+            socialValues.put(DatabaseConstants.SOCIALFEED_STORY_USER_ID, sharedUserId);
+            socialValues.put(DatabaseConstants.SOCIALFEED_STORY_STORYID, values.getAsString(DatabaseConstants.STORY_ID));
+            dbRW.insertWithOnConflict(DatabaseConstants.SOCIALFEED_STORY_MAP_TABLE, null, socialValues, SQLiteDatabase.CONFLICT_REPLACE);
+        }
+        // handle comments
+        for (Comment comment : story.publicComments) {
+            comment.storyId = story.id;
+            insertSingleCommentExtSync(comment);
+        }
+        for (Comment comment : story.friendsComments) {
+            comment.storyId = story.id;
+            comment.byFriend = true;
+            insertSingleCommentExtSync(comment);
+        }
+        for (Comment comment : story.friendsShares) {
+            comment.isPseudo = true;
+            comment.storyId = story.id;
+            comment.byFriend = true;
+            insertSingleCommentExtSync(comment);
+        }
+    }
+
+    private void insertSingleCommentExtSync(Comment comment) {
+        // real comments replace placeholders
+        int count = dbRW.delete(DatabaseConstants.COMMENT_TABLE, DatabaseConstants.COMMENT_ISPLACEHOLDER + " = ?", new String[]{"true"});
+        // comments always come with an updated set of replies, so remove old ones first
+        dbRW.delete(DatabaseConstants.REPLY_TABLE, DatabaseConstants.REPLY_COMMENTID + " = ?", new String[]{comment.id});
+        dbRW.insertWithOnConflict(DatabaseConstants.COMMENT_TABLE, null, comment.getValues(), SQLiteDatabase.CONFLICT_REPLACE);
+        for (Reply reply : comment.replies) {
+            reply.commentId = comment.id;
+            dbRW.insertWithOnConflict(DatabaseConstants.REPLY_TABLE, null, reply.getValues(), SQLiteDatabase.CONFLICT_REPLACE);
+        }
+    }
+
+    /**
+     * Update an existing story based upon a new copy received from a social API. This handles the fact
+     * that some social APIs helpfully vend updated copies of stories with social-related fields updated
+     * to reflect a social action, but that the new copy is missing some fields.  Attempt to merge the
+     * new story with the old one.
+     */
+    public void updateStory(StoriesResponse apiResponse, boolean forImmediateReading) {
+        if (apiResponse.story == null) {
+            com.newsblur.util.Log.e(this, "updateStory called on response with missing single story");
+            return;
+        }
+        Cursor c = dbRO.query(DatabaseConstants.STORY_TABLE, 
+                              null, 
+                              DatabaseConstants.STORY_HASH + " = ?", 
+                              new String[]{apiResponse.story.storyHash}, 
+                              null, null, null);
+        if (c.getCount() < 1) {
+            com.newsblur.util.Log.w(this, "updateStory can't find old copy; new story may be missing fields.");
+        } else {
+            Story oldStory = Story.fromCursor(c);
+            c.close();
+            apiResponse.story.starred = oldStory.starred;
+            apiResponse.story.starredTimestamp = oldStory.starredTimestamp;
+            apiResponse.story.read = oldStory.read;
+        }
+        insertStories(apiResponse, forImmediateReading);
+    }
+
+    /**
+     * Update an existing comment and associated replies based upon a new copy received from a social
+     * API.  Most social APIs vend an updated view that replaces any old or placeholder records.
+     */
+    public void updateComment(CommentResponse apiResponse, String storyId) {
+        synchronized (RW_MUTEX) {
+            // comments often contain enclosed replies, so batch them.
+            dbRW.beginTransaction();
+            try {
+                // the API might include new supplemental user metadata if new replies have shown up.
+                if (apiResponse.users != null) {
+                    List<ContentValues> userValues = new ArrayList<ContentValues>(apiResponse.users.length);
+                    for (UserProfile user : apiResponse.users) {
+                        userValues.add(user.getValues());
+                    }
+                    bulkInsertValuesExtSync(DatabaseConstants.USER_TABLE, userValues);
+                }
+
+                // we store all comments in the context of the associated story, but the social API doesn't
+                // reference the story when responding, so fix that from our context
+                apiResponse.comment.storyId = storyId;
+                insertSingleCommentExtSync(apiResponse.comment);
                 dbRW.setTransactionSuccessful();
             } finally {
                 dbRW.endTransaction();
@@ -518,6 +588,29 @@ public class BlurDatabaseHelper {
                 dbRW.endTransaction();
             }
         }
+    }
+
+    public void setFeedFetchPending(String feedId) {
+        ContentValues values = new ContentValues();
+        values.put(DatabaseConstants.FEED_FETCH_PENDING, true);
+        synchronized (RW_MUTEX) {dbRW.update(DatabaseConstants.FEED_TABLE, values, DatabaseConstants.FEED_ID + " = ?", new String[]{feedId});}
+    }
+
+    public boolean isFeedSetFetchPending(FeedSet fs) {
+        if (fs.getSingleFeed() != null) {
+            String feedId = fs.getSingleFeed();
+            Cursor c = dbRO.query(DatabaseConstants.FEED_TABLE, 
+                                  new String[]{DatabaseConstants.FEED_FETCH_PENDING}, 
+                                  DatabaseConstants.FEED_ID + " = ? AND " + DatabaseConstants.FEED_FETCH_PENDING + " = ?", 
+                                  new String[]{feedId, "1"}, 
+                                  null, null, null);
+            try {
+                if (c.getCount() > 0) return true;
+            } finally {
+                closeQuietly(c);
+            }
+        }
+        return false;
     }
 
     /**
@@ -675,6 +768,7 @@ public class BlurDatabaseHelper {
         Cursor c = dbRO.query(DatabaseConstants.FEED_TABLE, null, selection, selArgs, null, null, null);
         while (c.moveToNext()) {
             Feed f = Feed.fromCursor(c);
+            if(!f.active) continue;
             result += f.positiveCount;
             if ((stateFilter == StateFilter.SOME) || (stateFilter == StateFilter.ALL)) result += f.neutralCount;
             if (stateFilter == StateFilter.ALL) result += f.negativeCount;
@@ -761,6 +855,12 @@ public class BlurDatabaseHelper {
         return count;
     }
 
+    public void clearInfrequentSession() {
+        ContentValues values = new ContentValues();
+        values.put(DatabaseConstants.STORY_INFREQUENT, false);
+        synchronized (RW_MUTEX) {dbRW.update(DatabaseConstants.STORY_TABLE, values, null, null);}
+    }
+
     public void enqueueAction(ReadingAction ra) {
         synchronized (RW_MUTEX) {dbRW.insertOrThrow(DatabaseConstants.ACTION_TABLE, null, ra.toContentValues());}
     }
@@ -832,7 +932,7 @@ public class BlurDatabaseHelper {
         }
     }
 
-    public void setStoryShared(String hash) {
+    public void setStoryShared(String hash, boolean shared) {
         // get a fresh copy of the story from the DB so we can append to the shared ID set
         Cursor c = dbRO.query(DatabaseConstants.STORY_TABLE, 
                               new String[]{DatabaseConstants.STORY_SHARED_USER_IDS}, 
@@ -848,12 +948,16 @@ public class BlurDatabaseHelper {
 		String[] sharedUserIds = TextUtils.split(c.getString(c.getColumnIndex(DatabaseConstants.STORY_SHARED_USER_IDS)), ",");
         closeQuietly(c);
 
-        // the new id to append to the shared list (the current user)
-        String currentUser = PrefsUtils.getUserDetails(context).id;
+        // the id to append to or remove from the shared list (the current user)
+        String currentUser = PrefsUtils.getUserId(context);
 
         // append to set and update DB
         Set<String> newIds = new HashSet<String>(Arrays.asList(sharedUserIds));
-        newIds.add(currentUser);
+        if (shared) {
+            newIds.add(currentUser);
+        } else {
+            newIds.remove(currentUser);
+        }
         ContentValues values = new ContentValues();
 		values.put(DatabaseConstants.STORY_SHARED_USER_IDS, TextUtils.join(",", newIds));
         synchronized (RW_MUTEX) {dbRW.update(DatabaseConstants.STORY_TABLE, values, DatabaseConstants.STORY_HASH + " = ?", new String[]{hash});}
@@ -885,6 +989,7 @@ public class BlurDatabaseHelper {
             return null;
         } else {
             c.moveToFirst();
+            // TODO: may not contain col?
             String result = c.getString(c.getColumnIndexOrThrow(DatabaseConstants.STORY_CONTENT));
             c.close();
             return result;
@@ -898,14 +1003,24 @@ public class BlurDatabaseHelper {
         synchronized (RW_MUTEX) {dbRW.insertOrThrow(DatabaseConstants.STORY_TEXT_TABLE, null, values);}
     }
 
-    public Loader<Cursor> getSocialFeedsLoader(final StateFilter stateFilter) {
+    /**
+     * Get a loader that always returns a null cursor, for fragments that know they will never
+     * have a result (such as muted feeds).
+     */
+    public Loader<Cursor> getNullLoader() {
+        return new AsyncTaskLoader<Cursor>(context) {
+            public Cursor loadInBackground() {return null;}
+        };
+    }
+        
+    public Loader<Cursor> getSocialFeedsLoader() {
         return new QueryCursorLoader(context) {
-            protected Cursor createCursor() {return getSocialFeedsCursor(stateFilter, cancellationSignal);}
+            protected Cursor createCursor() {return getSocialFeedsCursor(cancellationSignal);}
         };
     }
 
-    public Cursor getSocialFeedsCursor(StateFilter stateFilter, CancellationSignal cancellationSignal) {
-        return query(false, DatabaseConstants.SOCIALFEED_TABLE, null, DatabaseConstants.getBlogSelectionFromState(stateFilter), null, null, null, "UPPER(" + DatabaseConstants.SOCIAL_FEED_TITLE + ") ASC", null, cancellationSignal);
+    public Cursor getSocialFeedsCursor(CancellationSignal cancellationSignal) {
+        return query(false, DatabaseConstants.SOCIALFEED_TABLE, null, null, null, null, null, "UPPER(" + DatabaseConstants.SOCIAL_FEED_TITLE + ") ASC", null, cancellationSignal);
     }
 
     public SocialFeed getSocialFeed(String feedId) {
@@ -938,14 +1053,14 @@ public class BlurDatabaseHelper {
         return query(false, DatabaseConstants.FOLDER_TABLE, null, null, null, null, null, null, null, cancellationSignal);
     }
 
-    public Loader<Cursor> getFeedsLoader(final StateFilter stateFilter) {
+    public Loader<Cursor> getFeedsLoader() {
         return new QueryCursorLoader(context) {
-            protected Cursor createCursor() {return getFeedsCursor(stateFilter, cancellationSignal);}
+            protected Cursor createCursor() {return getFeedsCursor(cancellationSignal);}
         };
     }
 
-    public Cursor getFeedsCursor(StateFilter stateFilter, CancellationSignal cancellationSignal) {
-        return query(false, DatabaseConstants.FEED_TABLE, null, DatabaseConstants.getFeedSelectionFromState(stateFilter), null, null, null, "UPPER(" + DatabaseConstants.FEED_TITLE + ") ASC", null, cancellationSignal);
+    public Cursor getFeedsCursor(CancellationSignal cancellationSignal) {
+        return query(false, DatabaseConstants.FEED_TABLE, null, null, null, null, null, "UPPER(" + DatabaseConstants.FEED_TITLE + ") ASC", null, cancellationSignal);
     }
 
     public Loader<Cursor> getSavedStoryCountsLoader() {
@@ -992,6 +1107,33 @@ public class BlurDatabaseHelper {
         };
     }
 
+    public Loader<Cursor> getStoriesLoader(@Nullable final FeedSet fs) {
+        return new QueryCursorLoader(context) {
+            @Override
+            protected Cursor createCursor() {
+                return getStoriesCursor(fs, cancellationSignal);
+            }
+        };
+    }
+
+    private Cursor getStoriesCursor(@Nullable FeedSet fs, CancellationSignal cancellationSignal) {
+        StringBuilder q = new StringBuilder(DatabaseConstants.STORY_QUERY_BASE_0);
+
+        if (fs != null && !TextUtils.isEmpty(fs.getSingleFeed())) {
+            q.append(DatabaseConstants.STORY_FEED_ID);
+            q.append(" = ");
+            q.append(fs.getSingleFeed());
+        } else {
+            q.append(DatabaseConstants.FEED_ACTIVE);
+            q.append(" = 1");
+        }
+
+        q.append(" ORDER BY ");
+        q.append(DatabaseConstants.STORY_TIMESTAMP);
+        q.append(" DESC LIMIT 20");
+        return rawQuery(q.toString(), null, cancellationSignal);
+    }
+
     private Cursor getActiveStoriesCursor(FeedSet fs, StoryOrder order, CancellationSignal cancellationSignal) {
         // get the stories for this FS
         Cursor result = getActiveStoriesCursorNoPrep(fs, order, cancellationSignal);
@@ -1024,6 +1166,7 @@ public class BlurDatabaseHelper {
     }
 
     public void clearStorySession() {
+        com.newsblur.util.Log.i(this, "reading session reset");
         synchronized (RW_MUTEX) {dbRW.delete(DatabaseConstants.READING_SESSION_TABLE, null, null);}
     }
 
@@ -1111,6 +1254,12 @@ public class BlurDatabaseHelper {
             sel.append(" WHERE (" + DatabaseConstants.STORY_STARRED + " = 1)");
             DatabaseConstants.appendStorySelection(sel, selArgs, ReadFilter.ALL, StateFilter.ALL, fs.getSearchQuery());
 
+        } else if (fs.isInfrequent()) {
+
+            sel.append(" FROM " + DatabaseConstants.STORY_TABLE);
+            sel.append(" WHERE (" + DatabaseConstants.STORY_INFREQUENT + " = 1)");
+            DatabaseConstants.appendStorySelection(sel, selArgs, readFilter, stateFilter, fs.getSearchQuery());
+
         } else if (fs.getSingleSavedTag() != null) {
 
             sel.append(" FROM " + DatabaseConstants.STORY_TABLE);
@@ -1133,6 +1282,31 @@ public class BlurDatabaseHelper {
         }
     }
 
+    public void setSessionFeedSet(FeedSet fs) {
+        if (fs == null) {
+            synchronized (RW_MUTEX) {dbRW.delete(DatabaseConstants.SYNC_METADATA_TABLE, DatabaseConstants.SYNC_METADATA_KEY + " = ?", new String[] {DatabaseConstants.SYNC_METADATA_KEY_SESSION_FEED_SET});}
+        } else {
+            ContentValues values = new ContentValues();
+            values.put(DatabaseConstants.SYNC_METADATA_KEY, DatabaseConstants.SYNC_METADATA_KEY_SESSION_FEED_SET);
+            values.put(DatabaseConstants.SYNC_METADATA_VALUE, fs.toCompactSerial());
+            synchronized (RW_MUTEX) {dbRW.insertWithOnConflict(DatabaseConstants.SYNC_METADATA_TABLE, null, values, SQLiteDatabase.CONFLICT_REPLACE);}
+        }
+    }
+        
+    public FeedSet getSessionFeedSet() {
+        FeedSet fs = null;
+        Cursor c = dbRO.query(DatabaseConstants.SYNC_METADATA_TABLE, null, DatabaseConstants.SYNC_METADATA_KEY + " = ?", new String[] {DatabaseConstants.SYNC_METADATA_KEY_SESSION_FEED_SET}, null, null, null, null);
+        if (c.getCount() < 1) return null;
+        c.moveToFirst();
+        fs = FeedSet.fromCompactSerial(c.getString(c.getColumnIndexOrThrow(DatabaseConstants.SYNC_METADATA_VALUE)));
+        closeQuietly(c);
+        return fs;
+    }
+
+    public boolean isFeedSetReady(FeedSet fs) {
+        return fs.equals(getSessionFeedSet());
+    }
+
     public void clearClassifiersForFeed(String feedId) {
         String[] selArgs = new String[] {feedId};
         synchronized (RW_MUTEX) {dbRW.delete(DatabaseConstants.CLASSIFIER_TABLE, DatabaseConstants.CLASSIFIER_ID + " = ?", selArgs);}
@@ -1147,6 +1321,7 @@ public class BlurDatabaseHelper {
         Cursor c = dbRO.query(DatabaseConstants.CLASSIFIER_TABLE, null, DatabaseConstants.CLASSIFIER_ID + " = ?", selArgs, null, null, null);
         Classifier classifier = Classifier.fromCursor(c);
         closeQuietly(c);
+        classifier.feedId = feedId;
         return classifier;
     }
 
@@ -1173,12 +1348,16 @@ public class BlurDatabaseHelper {
         return comment;
     }
 
-    public void insertUpdateComment(String storyId, String feedId, String commentText) {
-        // we can only insert comments as the currently logged-in user
-        String userId = PrefsUtils.getUserDetails(context).id;
-
+    /**
+     * Insert brand new comment for which we do not yet have a server-assigned ID.  This comment
+     * will show up in the UI with reduced functionality until the server gets back to us with
+     * an ID at which time the placeholder will be removed.
+     */
+    public void insertCommentPlaceholder(String storyId, String feedId, String commentText) {
+        String userId = PrefsUtils.getUserId(context);
         Comment comment = new Comment();
-        comment.id = Comment.constructId(storyId, feedId, userId);
+        comment.isPlaceholder = true;
+        comment.id = Comment.PLACEHOLDER_COMMENT_ID + storyId + userId;
         comment.storyId = storyId;
         comment.userId = userId;
         comment.commentText = commentText;
@@ -1186,31 +1365,55 @@ public class BlurDatabaseHelper {
         if (TextUtils.isEmpty(commentText)) {
             comment.isPseudo = true;
         }
-        synchronized (RW_MUTEX) {dbRW.insertWithOnConflict(DatabaseConstants.COMMENT_TABLE, null, comment.getValues(), SQLiteDatabase.CONFLICT_REPLACE);}
+        synchronized (RW_MUTEX) {
+            // in order to make this method idempotent (so it can be attempted before, during, or after
+            // the real comment is done, we have to check for a real one
+            if (getComment(storyId, userId) != null) {
+                com.newsblur.util.Log.i(this.getClass().getName(), "electing not to insert placeholder comment over live one");
+                return;
+            }
+            dbRW.insertWithOnConflict(DatabaseConstants.COMMENT_TABLE, null, comment.getValues(), SQLiteDatabase.CONFLICT_REPLACE);
+        }
+    }
+
+    public void editReply(String replyId, String replyText) {
+        ContentValues values = new ContentValues();
+        values.put(DatabaseConstants.REPLY_TEXT, replyText);
+        synchronized (RW_MUTEX) {dbRW.update(DatabaseConstants.REPLY_TABLE, values, DatabaseConstants.REPLY_ID + " = ?", new String[]{replyId});}
+    }
+
+    public void deleteReply(String replyId) {   
+        synchronized (RW_MUTEX) {dbRW.delete(DatabaseConstants.REPLY_TABLE, DatabaseConstants.REPLY_ID + " = ?", new String[]{replyId});}
+    }
+
+    public void clearSelfComments(String storyId) {
+        String userId = PrefsUtils.getUserId(context);
+        synchronized (RW_MUTEX) {dbRW.delete(DatabaseConstants.COMMENT_TABLE, 
+                                             DatabaseConstants.COMMENT_STORYID + " = ? AND " + DatabaseConstants.COMMENT_USERID + " = ?", 
+                                             new String[]{storyId, userId});}
     }
 
     public void setCommentLiked(String storyId, String userId, String feedId, boolean liked) {
-        String commentKey = Comment.constructId(storyId, feedId, userId);
         // get a fresh copy of the story from the DB so we can append to the shared ID set
         Cursor c = dbRO.query(DatabaseConstants.COMMENT_TABLE, 
-                              new String[]{DatabaseConstants.COMMENT_LIKING_USERS}, 
-                              DatabaseConstants.COMMENT_ID + " = ?", 
-                              new String[]{commentKey}, 
+                              null, 
+                              DatabaseConstants.COMMENT_STORYID + " = ? AND " + DatabaseConstants.COMMENT_USERID + " = ?", 
+                              new String[]{storyId, userId}, 
                               null, null, null);
         if ((c == null)||(c.getCount() < 1)) {
-            Log.w(this.getClass().getName(), "story removed before finishing mark-shared");
+            Log.w(this.getClass().getName(), "comment removed before finishing mark-liked");
             closeQuietly(c);
             return;
         }
         c.moveToFirst();
-		String[] likingUserIds = TextUtils.split(c.getString(c.getColumnIndex(DatabaseConstants.COMMENT_LIKING_USERS)), ",");
+        Comment comment = Comment.fromCursor(c);
         closeQuietly(c);
 
         // the new id to append/remove from the liking list (the current user)
-        String currentUser = PrefsUtils.getUserDetails(context).id;
+        String currentUser = PrefsUtils.getUserId(context);
 
         // append to set and update DB
-        Set<String> newIds = new HashSet<String>(Arrays.asList(likingUserIds));
+        Set<String> newIds = new HashSet<String>(Arrays.asList(comment.likingUsers));
         if (liked) {
             newIds.add(currentUser);
         } else {
@@ -1218,7 +1421,7 @@ public class BlurDatabaseHelper {
         }
         ContentValues values = new ContentValues();
 		values.put(DatabaseConstants.COMMENT_LIKING_USERS, TextUtils.join(",", newIds));
-        synchronized (RW_MUTEX) {dbRW.update(DatabaseConstants.COMMENT_TABLE, values, DatabaseConstants.COMMENT_ID + " = ?", new String[]{commentKey});}
+        synchronized (RW_MUTEX) {dbRW.update(DatabaseConstants.COMMENT_TABLE, values, DatabaseConstants.COMMENT_ID + " = ?", new String[]{comment.id});}
     }
 
     public UserProfile getUserProfile(String userId) {
@@ -1242,13 +1445,28 @@ public class BlurDatabaseHelper {
         return replies;
     }
 
-    public void replyToComment(String storyId, String feedId, String commentUserId, String replyText, long replyCreateTime) {
+    public void insertReplyPlaceholder(String storyId, String feedId, String commentUserId, String replyText) {
+        // get a fresh copy of the comment so we can discover the ID
+        Cursor c = dbRO.query(DatabaseConstants.COMMENT_TABLE, 
+                              null, 
+                              DatabaseConstants.COMMENT_STORYID + " = ? AND " + DatabaseConstants.COMMENT_USERID + " = ?", 
+                              new String[]{storyId, commentUserId}, 
+                              null, null, null);
+        if ((c == null)||(c.getCount() < 1)) {
+            com.newsblur.util.Log.w(this, "comment removed before reply could be processed");
+            closeQuietly(c);
+            return;
+        }
+        c.moveToFirst();
+        Comment comment = Comment.fromCursor(c);
+        closeQuietly(c);
+
         Reply reply = new Reply();
-        reply.commentId = Comment.constructId(storyId, feedId, commentUserId);
+        reply.commentId = comment.id;
         reply.text = replyText;
-        reply.userId = PrefsUtils.getUserDetails(context).id;
-        reply.date = new Date(replyCreateTime);
-        reply.id = reply.constructId();
+        reply.userId = PrefsUtils.getUserId(context);
+        reply.date = new Date();
+        reply.id = Reply.PLACEHOLDER_COMMENT_ID + storyId + comment.id + reply.userId;
         synchronized (RW_MUTEX) {dbRW.insertWithOnConflict(DatabaseConstants.REPLY_TABLE, null, reply.getValues(), SQLiteDatabase.CONFLICT_REPLACE);}
     }
 
@@ -1277,6 +1495,76 @@ public class BlurDatabaseHelper {
                         new String[]{Long.toString(cutoffDate.getTime().getTime())});
             com.newsblur.util.Log.d(this.getClass().getName(), "cleaned up dismissals: " + count);
         }
+    }
+
+    private void putFeedTagsExtSync(String feedId, Collection<String> tags) {
+        dbRW.delete(DatabaseConstants.FEED_TAGS_TABLE,
+                    DatabaseConstants.FEED_TAGS_FEEDID + " = ?",
+                    new String[]{feedId}
+                   );
+        List<ContentValues> valuesList = new ArrayList<ContentValues>(tags.size());
+        for (String tag : tags) {
+            ContentValues values = new ContentValues();
+            values.put(DatabaseConstants.FEED_TAGS_FEEDID, feedId);
+            values.put(DatabaseConstants.FEED_TAGS_TAG, tag);
+            valuesList.add(values);
+        }
+        bulkInsertValuesExtSync(DatabaseConstants.FEED_TAGS_TABLE, valuesList);
+    }
+
+    public List<String> getTagsForFeed(String feedId) {
+        Cursor c = dbRO.query(DatabaseConstants.FEED_TAGS_TABLE, 
+                              new String[]{DatabaseConstants.FEED_TAGS_TAG}, 
+                              DatabaseConstants.FEED_TAGS_FEEDID + " = ?", 
+                              new String[]{feedId}, 
+                              null, 
+                              null, 
+                              DatabaseConstants.FEED_TAGS_TAG + " ASC"
+                             );
+        List<String> result = new ArrayList<String>(c.getCount());
+        while (c.moveToNext()) {
+            result.add(c.getString(c.getColumnIndexOrThrow(DatabaseConstants.FEED_TAGS_TAG)));
+        }
+        closeQuietly(c);
+        return result;
+    }
+        
+    private void putFeedAuthorsExtSync(String feedId, Collection<String> authors) {
+        dbRW.delete(DatabaseConstants.FEED_AUTHORS_TABLE,
+                    DatabaseConstants.FEED_AUTHORS_FEEDID + " = ?",
+                    new String[]{feedId}
+                   );
+        List<ContentValues> valuesList = new ArrayList<ContentValues>(authors.size());
+        for (String author : authors) {
+            ContentValues values = new ContentValues();
+            values.put(DatabaseConstants.FEED_AUTHORS_FEEDID, feedId);
+            values.put(DatabaseConstants.FEED_AUTHORS_AUTHOR, author);
+            valuesList.add(values);
+        }
+        bulkInsertValuesExtSync(DatabaseConstants.FEED_AUTHORS_TABLE, valuesList);
+    }
+
+    public List<String> getAuthorsForFeed(String feedId) {
+        Cursor c = dbRO.query(DatabaseConstants.FEED_AUTHORS_TABLE, 
+                              new String[]{DatabaseConstants.FEED_AUTHORS_AUTHOR}, 
+                              DatabaseConstants.FEED_AUTHORS_FEEDID + " = ?", 
+                              new String[]{feedId}, 
+                              null, 
+                              null, 
+                              DatabaseConstants.FEED_AUTHORS_AUTHOR + " ASC"
+                             );
+        List<String> result = new ArrayList<String>(c.getCount());
+        while (c.moveToNext()) {
+            result.add(c.getString(c.getColumnIndexOrThrow(DatabaseConstants.FEED_AUTHORS_AUTHOR)));
+        }
+        closeQuietly(c);
+        return result;
+    }
+
+    public void renameFeed(String feedId, String newFeedName) {
+        ContentValues values = new ContentValues();
+        values.put(DatabaseConstants.FEED_TITLE, newFeedName);
+        synchronized (RW_MUTEX) {dbRW.update(DatabaseConstants.FEED_TABLE, values, DatabaseConstants.FEED_ID + " = ?", new String[]{feedId});}
     }
 
     public static void closeQuietly(Cursor c) {

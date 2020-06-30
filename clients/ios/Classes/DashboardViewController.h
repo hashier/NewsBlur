@@ -7,6 +7,7 @@
 //
 
 #import <UIKit/UIKit.h>
+#import "NBDashboardNavigationBar.h"
 
 @class NewsBlurAppDelegate;
 @class InteractionsModule;
@@ -14,14 +15,13 @@
 @class FeedbackModule;
 @class FeedDetailViewController;
 
-@interface DashboardViewController : UIViewController <UIPopoverControllerDelegate, UIWebViewDelegate> {
+@interface DashboardViewController : UIViewController <UIPopoverControllerDelegate> {
     NewsBlurAppDelegate *appDelegate;
     InteractionsModule *interactionsModule;
     ActivityModule *activitiesModule;
     FeedDetailViewController *storiesModule;
-    UIWebView *feedbackWebView;
     UIToolbar *toolbar;
-    UINavigationBar *topToolbar;
+    NBDashboardNavigationBar *topToolbar;
     UISegmentedControl *segmentedButton;
 }
 
@@ -29,9 +29,8 @@
 @property (nonatomic) IBOutlet InteractionsModule *interactionsModule;
 @property (nonatomic) IBOutlet ActivityModule *activitiesModule;
 @property (nonatomic) IBOutlet FeedDetailViewController *storiesModule;
-@property (nonatomic) IBOutlet UIWebView *feedbackWebView;
 
-@property (nonatomic) IBOutlet UINavigationBar *topToolbar;
+@property (nonatomic) IBOutlet NBDashboardNavigationBar *topToolbar;
 @property (nonatomic) IBOutlet UIToolbar *toolbar;
 @property (nonatomic) IBOutlet UISegmentedControl *segmentedButton;
 @property (nonatomic) IBOutlet UIImageView *logoImageView;

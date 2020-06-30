@@ -191,9 +191,11 @@ NEWSBLUR.Views.StoryTitleView = Backbone.View.extend({
         // console.log(['render_intelligence', score, unread_view, this.model.get('visible'), this.model.get('story_title')]);
         
         if (score >= unread_view) {
+            this.$el.removeClass('NB-hidden');
             this.$st.removeClass('NB-hidden');
             this.model.set('visible', true);
         } else {
+            this.$el.addClass('NB-hidden');
             this.$st.addClass('NB-hidden');
             this.model.set('visible', false);
         }
@@ -280,7 +282,7 @@ NEWSBLUR.Views.StoryTitleView = Backbone.View.extend({
             }
         }).attr('src', this.model.image_url(index)).each(function() {
             // fail-safe for cached images which sometimes don't trigger "load" events
-            if (this.complete) $(this).load();
+            if (this.complete) $(this).trigger('load');
         });
     },
     
@@ -309,7 +311,7 @@ NEWSBLUR.Views.StoryTitleView = Backbone.View.extend({
         if (i) {
             this.$(".NB-storytitles-story-image").css({
                 'display': 'block',
-                'background-image': "url("+NEWSBLUR.Globals.MEDIA_URL+"img/reader/youtube_play.png), url(" + "http://img.youtube.com/vi/" + i + "/0.jpg" + ")"
+                'background-image': "url("+NEWSBLUR.Globals.MEDIA_URL+"img/reader/youtube_play.png), url(" + "https://img.youtube.com/vi/" + i + "/0.jpg" + ")"
             });
             return true;
         }

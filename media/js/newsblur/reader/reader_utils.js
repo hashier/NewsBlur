@@ -6,14 +6,13 @@ NEWSBLUR.utils = {
             return 'Twitter';
             case 'facebook':
             return 'Facebook';
-            case 'appdotnet':
-            return 'App.net';
         }
     },
     
     compute_story_score: function(story) {
       var score = 0;
       var intelligence = story.get('intelligence');
+      if (!intelligence) return score;
       var score_max = Math.max(intelligence['title'],
                                intelligence['author'],
                                intelligence['tags']);
@@ -196,7 +195,8 @@ NEWSBLUR.utils = {
             'stackexchange.com',
             'twitter.com',
             'rankexploits',
-            'gamespot.com'
+            'gamespot.com',
+            'royalroad.com'
         ];
         return _.any(BROKEN_URLS, function(broken_url) {
             return _.string.contains(url, broken_url);

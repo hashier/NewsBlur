@@ -14,6 +14,15 @@
 #import "IASKAppSettingsViewController.h"
 #import "MCSwipeTableViewCell.h"
 
+// indices in appDelegate.dictFoldersArray and button tags
+// keep in sync with NewsBlurTopSectionNames
+static enum {
+    NewsBlurTopSectionGlobalSharedStories = 0,
+    NewsBlurTopSectionAllSharedStories = 1,
+    NewsBlurTopSectionInfrequentSiteStories = 2,
+    NewsBlurTopSectionAllStories = 3
+} NewsBlurTopSection;
+
 @class NewsBlurAppDelegate;
 
 @interface NewsBlurViewController : BaseViewController
@@ -22,12 +31,13 @@ NSCacheDelegate,
 UIPopoverControllerDelegate,
 IASKSettingsDelegate,
 MCSwipeTableViewCellDelegate,
-UIGestureRecognizerDelegate> {
+UIGestureRecognizerDelegate, UISearchBarDelegate> {
     NewsBlurAppDelegate *appDelegate;
     
     NSMutableDictionary * activeFeedLocations;
     NSMutableDictionary *stillVisibleFeeds;
     NSMutableDictionary *visibleFolders;
+    NSMutableDictionary *indexPathsForFeedIds;
     
     BOOL isOffline;
     BOOL viewShowingAllFeeds;
@@ -35,7 +45,6 @@ UIGestureRecognizerDelegate> {
     NSDate *lastUpdate;
     NSCache *imageCache;
     
-    UIView *innerView;
 	UITableView * feedTitlesTable;
 	UIToolbar * feedViewToolbar;
     UISlider * feedScoreSlider;
@@ -61,6 +70,7 @@ UIGestureRecognizerDelegate> {
 @property (nonatomic) IBOutlet UILabel *neutralCount;
 @property (nonatomic) IBOutlet UILabel *positiveCount;
 @property (nonatomic) IBOutlet UILabel *userLabel;
+@property (nonatomic) IBOutlet UIImageView *yellowIcon;
 @property (nonatomic) IBOutlet UIImageView *greenIcon;
 @property (nonatomic) NSMutableDictionary *activeFeedLocations;
 @property (nonatomic) NSMutableDictionary *stillVisibleFeeds;
@@ -69,12 +79,15 @@ UIGestureRecognizerDelegate> {
 @property (nonatomic, readwrite) BOOL interactiveFeedDetailTransition;
 @property (nonatomic, readwrite) BOOL isOffline;
 @property (nonatomic) UIRefreshControl *refreshControl;
+@property (nonatomic) UISearchBar *searchBar;
+@property (nonatomic, strong) NSArray<NSString *> *searchFeedIds;
 @property (nonatomic) NSDate *lastUpdate;
 @property (nonatomic) NSCache *imageCache;
 @property (nonatomic) IBOutlet UISegmentedControl * intelligenceControl;
 @property (nonatomic) NSIndexPath *currentRowAtIndexPath;
 @property (nonatomic) NSInteger currentSection;
 @property (strong, nonatomic) IBOutlet UIView *noFocusMessage;
+@property (strong, nonatomic) IBOutlet UILabel *noFocusLabel;
 @property (strong, nonatomic) IBOutlet UIBarButtonItem *toolbarLeftMargin;
 @property (nonatomic, retain) NBNotifier *notifier;
 @property (nonatomic, retain) UIImageView *avatarImageView;
@@ -115,15 +128,18 @@ UIGestureRecognizerDelegate> {
 - (void)resetToolbar;
 - (void)layoutHeaderCounts:(UIInterfaceOrientation)orientation;
 - (void)refreshHeaderCounts;
+- (void)redrawFeedCounts:(id)feedId;
 
+- (void)resizePreviewSize;
+- (void)resizeFontSize;
 - (void)settingsViewControllerDidEnd:(IASKAppSettingsViewController*)sender;
 - (void)settingDidChange:(NSNotification*)notification;
 
 - (void)showRefreshNotifier;
 - (void)showCountingNotifier;
 - (void)showSyncingNotifier;
-- (void)showSyncingNotifier:(float)progress hoursBack:(NSInteger)days;
-- (void)showCachingNotifier:(float)progress hoursBack:(NSInteger)hours;
+- (void)showSyncingNotifier:(float)progress hoursBack:(NSInteger)hours;
+- (void)showCachingNotifier:(NSString *)prefix progress:(float)progress hoursBack:(NSInteger)hours;
 - (void)showOfflineNotifier;
 - (void)showDoneNotifier;
 - (void)hideNotifier;

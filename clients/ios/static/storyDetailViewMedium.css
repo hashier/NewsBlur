@@ -8,7 +8,7 @@
 
 body {
     color: #eeeeee;
-    background-color: gray;
+    background-color: #444444;
 }
 
 /* ========== */
@@ -17,7 +17,7 @@ body {
 
 .NB-header {
     color: #bbbbbb;
-    background-image: -webkit-gradient(linear, left top, left bottom, from(#777777), to(#606060));
+    background-image: -webkit-gradient(linear, left top, left bottom, from(#606060), to(#404040));
     border-bottom: 1px solid #535353;
     text-shadow: 0 1px 0 rgba(28, 28, 28, .1);
 
@@ -39,6 +39,10 @@ body {
 
 .NB-story-permalink {
     color: lightgray;
+}
+.NB-story-toggle-changes {
+    color: #c6c6c6;
+    text-shadow: 0 1px 0 rgba(28, 28, 28, .1);
 }
 .NB-story-date {
     color: #c6c6c6;
@@ -115,6 +119,25 @@ a:active {
 .NB-story blockquote {
     border-left-color: #676264;
     background-color: #6c696a;
+}
+
+ins {
+    background-color: #475D49;
+    text-decoration: none;
+}
+
+del {
+    background-color: #685253
+    /*display: none;*/
+}
+
+.NB-story ins {
+    background-color: #475D49;
+    text-decoration: none
+}
+
+.NB-story del {
+    background-color: #685253
 }
 
 /* Comments */
@@ -245,4 +268,10 @@ a:active {
     -webkit-box-shadow: inset 0px 2px 1px #818181;
 }
 
+.NB-text-view-premium-only {
+    background-color: gray;
+}
 
+.NB-text-view-premium-only .NB-feed-story-premium-only-divider {
+    filter: invert(100%);
+}

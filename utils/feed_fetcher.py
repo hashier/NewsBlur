@@ -34,6 +34,7 @@ from django.utils.encoding import smart_unicode
 from utils import json_functions as json
 from celery.exceptions import SoftTimeLimitExceeded
 from utils.twitter_fetcher import TwitterFetcher
+from utils.facebook_fetcher import FacebookFetcher
 from utils.json_fetcher import JSONFetcher
 # from utils.feed_functions import mail_feed_error_to_admin
 
@@ -88,7 +89,7 @@ class FetchFeed:
             logging.debug(u'   ---> [%-30s] ~FM~BKFeed fetched in real-time with fat ping.' % (
                           self.feed.log_title[:30]))
             return FEED_OK, self.fpf
-        
+
         if 'youtube.com' in address:
             try:
                 youtube_feed = self.fetch_youtube(address)
@@ -99,13 +100,20 @@ class FetchFeed:
                               (self.feed.log_title[:30], address))
                 return FEED_ERRHTTP, None
             self.fpf = feedparser.parse(youtube_feed)
-        elif re.match('(https?)?://twitter.com/\w+/?$', qurl(address, remove=['_'])):
+        elif re.match(r'(https?)?://twitter.com/\w+/?', qurl(address, remove=['_'])):
             twitter_feed = self.fetch_twitter(address)
             if not twitter_feed:
                 logging.debug(u'   ***> [%-30s] ~FRTwitter fetch failed: %s' % 
                               (self.feed.log_title[:30], address))
                 return FEED_ERRHTTP, None
             self.fpf = feedparser.parse(twitter_feed)
+        elif re.match(r'(.*?)facebook.com/\w+/?$', qurl(address, remove=['_'])):
+            facebook_feed = self.fetch_facebook()
+            if not facebook_feed:
+                logging.debug(u'   ***> [%-30s] ~FRFacebook fetch failed: %s' % 
+                              (self.feed.log_title[:30], address))
+                return FEED_ERRHTTP, None
+            self.fpf = feedparser.parse(facebook_feed)
         
         if not self.fpf:
             try:
@@ -126,7 +134,7 @@ class FetchFeed:
                 raw_feed = requests.get(address, headers=headers)
                 if raw_feed.status_code >= 400:
                     logging.debug("   ***> [%-30s] ~FRFeed fetch was %s status code, trying fake user agent: %s" % (self.feed.log_title[:30], raw_feed.status_code, raw_feed.headers))
-                    raw_feed = requests.get(address, headers=self.feed.fetch_headers(fake=True))
+                    raw_feed = requests.get(self.feed.feed_address, headers=self.feed.fetch_headers(fake=True))
                 
                 if raw_feed.content and 'application/json' in raw_feed.headers.get('Content-Type', ""):
                     # JSON Feed
@@ -186,6 +194,10 @@ class FetchFeed:
         twitter_fetcher = TwitterFetcher(self.feed, self.options)
         return twitter_fetcher.fetch(address)
     
+    def fetch_facebook(self):
+        facebook_fetcher = FacebookFetcher(self.feed, self.options)
+        return facebook_fetcher.fetch()
+    
     def fetch_json_feed(self, address, headers):
         json_fetcher = JSONFetcher(self.feed, self.options)
         return json_fetcher.fetch(address, headers)
@@ -218,9 +230,14 @@ class FetchFeed:
                 list_id = urlparse.parse_qs(urlparse.urlparse(address).query)['list'][0]
             except IndexError:
                 return            
+        elif 'youtube.com/feeds/videos.xml?playlist_id' in address:
+            try:
+                list_id = urlparse.parse_qs(urlparse.urlparse(address).query)['playlist_id'][0]
+            except IndexError:
+                return            
         
         if channel_id:
-            video_ids_xml = requests.get("https://www.youtube.com/feeds/videos.xml?channel_id=%s" % channel_id)
+            video_ids_xml = requests.get("https://www.youtube.com/feeds/videos.xml?channel_id=%s" % channel_id, verify=False)
             channel_json = requests.get("https://www.googleapis.com/youtube/v3/channels?part=snippet&id=%s&key=%s" %
                                        (channel_id, settings.YOUTUBE_API_KEY))
             channel = json.decode(channel_json.content)
@@ -240,7 +257,7 @@ class FetchFeed:
                 return
             channel_url = "https://www.youtube.com/playlist?list=%s" % list_id
         elif username:
-            video_ids_xml = requests.get("https://www.youtube.com/feeds/videos.xml?user=%s" % username)
+            video_ids_xml = requests.get("https://www.youtube.com/feeds/videos.xml?user=%s" % username, verify=False)
             description = "YouTube videos uploaded by %s" % username
         else:
             return
@@ -358,9 +375,9 @@ class ProcessFeed:
                 self.feed.save_feed_history(304, "Not modified")
                 return FEED_SAME, ret_values
             
-            # 302: Temporary redirect: ignore
-            # 301: Permanent redirect: save it (after 10 tries)
-            if self.fpf.status == 301:
+            # 302 and 307: Temporary redirect: ignore
+            # 301 and 308: Permanent redirect: save it (after 10 tries)
+            if self.fpf.status == 301 or self.fpf.status == 308:
                 if self.fpf.href.endswith('feedburner.com/atom.xml'):
                     return FEED_ERRHTTP, ret_values
                 redirects, non_redirects = self.feed.count_redirects_in_history('feed')
@@ -488,6 +505,7 @@ class ProcessFeed:
         stories = []
         for entry in self.fpf.entries:
             story = pre_process_story(entry, self.fpf.encoding)
+            if not story['title'] and not story['story_content']: continue
             if story.get('published') < start_date:
                 start_date = story.get('published')
             if replace_guids:

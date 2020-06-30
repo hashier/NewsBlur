@@ -34,9 +34,9 @@ public class Log {
 
     private static final String LOG_NAME_INTERNAL = "logbuffer.txt";
     private static final int MAX_QUEUE_SIZE = 10;
-    private static final int MAX_LINE_SIZE = 4 * 1024;
-    private static final int TRIM_LINES = 384;                 // trim the log down to 384 lines
-    private static final long MAX_SIZE = 512L * MAX_LINE_SIZE; // when it is at least 512 lines long
+    private static final int MAX_LINE_SIZE = 2 * 1024;
+    private static final int TRIM_LINES = 1000;                 // trim the log down to 1000 lines
+    private static final long MAX_SIZE = 2000L * MAX_LINE_SIZE; // when it is at least 2000 lines long
 
     private static Queue<String> q;
     private static ExecutorService executor;
@@ -52,6 +52,26 @@ public class Log {
     }
 
     private Log() {} // util class - no instances
+
+    public static void d(Object src, String m) {
+        d(src.getClass().getName(), m);
+    }
+
+    public static void i(Object src, String m) {
+        i(src.getClass().getName(), m);
+    }
+
+    public static void w(Object src, String m) {
+        w(src.getClass().getName(), m);
+    }
+
+    public static void e(Object src, String m) {
+        e(src.getClass().getName(), m);
+    }
+
+    public static void e(Object src, String m, Throwable t) {
+        e(src.getClass().getName(), m, t);
+    }
 
     public static void d(String tag, String m) {
         if (AppConstants.VERBOSE_LOG) android.util.Log.d(tag, m);

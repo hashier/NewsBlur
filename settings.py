@@ -48,7 +48,13 @@ SERVER_NAME  = 'newsblur'
 SERVER_EMAIL = 'server@newsblur.com'
 HELLO_EMAIL  = 'hello@newsblur.com'
 NEWSBLUR_URL = 'http://www.newsblur.com'
+IMAGES_URL   = 'https://imageproxy.newsblur.com'
 SECRET_KEY            = 'YOUR_SECRET_KEY'
+IMAGES_SECRET_KEY = "YOUR_SECRET_IMAGE_KEY"
+DNSIMPLE_TOKEN = "YOUR_DNSIMPLE_TOKEN"
+RECAPTCHA_SECRET_KEY = "YOUR_RECAPTCHA_KEY"
+YOUTUBE_API_KEY = "YOUR_YOUTUBE_API_KEY"
+IMAGES_SECRET_KEY = "YOUR_IMAGES_SECRET_KEY"
 
 # ===================
 # = Global Settings =
@@ -78,7 +84,12 @@ HOMEPAGE_USERNAME     = 'popular'
 ALLOWED_HOSTS         = ['*']
 AUTO_PREMIUM_NEW_USERS = False
 AUTO_ENABLE_NEW_USERS = True
+ENFORCE_SIGNUP_CAPTCHA = True
 PAYPAL_TEST           = False
+
+# Uncomment below to force all feeds to store this many stories. Default is to cut 
+# off at 25 stories for single subscriber non-premium feeds and 500 for popular feeds.
+# OVERRIDE_STORY_COUNT_MAX = 1000
 
 # ===========================
 # = Django-specific Modules =
@@ -125,7 +136,7 @@ OAUTH2_PROVIDER = {
     'SCOPES': {
         'read': 'View new unread stories, saved stories, and shared stories.',
         'write': 'Create new saved stories, shared stories, and subscriptions.',
-        'ifttt': 'Pair your NewsBlur account with other IFTTT channels.',
+        'ifttt': 'Pair your NewsBlur account with other services.',
     },
     'CLIENT_ID_GENERATOR_CLASS': 'oauth2_provider.generators.ClientIdGenerator',
     'ACCESS_TOKEN_EXPIRE_SECONDS': 60*60*24*365*10, # 10 years
@@ -265,14 +276,17 @@ SOUTH_TESTS_MIGRATE     = False
 SESSION_ENGINE          = 'redis_sessions.session'
 TEST_RUNNER             = "utils.testrunner.TestRunner"
 SESSION_COOKIE_NAME     = 'newsblur_sessionid'
-SESSION_COOKIE_AGE      = 60*60*24*365 # 1 year
+SESSION_COOKIE_AGE      = 60*60*24*365*10 # 10 years
 SESSION_COOKIE_DOMAIN   = '.newsblur.com'
+SESSION_COOKIE_HTTPONLY = False
 SENTRY_DSN              = 'https://XXXNEWSBLURXXX@app.getsentry.com/99999999'
+SESSION_SERIALIZER = 'django.contrib.sessions.serializers.PickleSerializer'
 
 if DEBUG:
-    EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
+    # EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
+    EMAIL_BACKEND = 'vendor.mailgun.MailgunBackend'
 else:
-    EMAIL_BACKEND = 'django_mailgun.MailgunBackend'
+    EMAIL_BACKEND = 'vendor.mailgun.MailgunBackend'
 
 # ==============
 # = Subdomains =
@@ -472,9 +486,19 @@ CELERYBEAT_SCHEDULE = {
         'schedule': datetime.timedelta(hours=12),
         'options': {'queue': 'beat_tasks', 'timeout': 720*10},
     },
+    'reimport-stripe-history': {
+        'task': 'reimport-stripe-history',
+        'schedule': datetime.timedelta(hours=6),
+        'options': {'queue': 'beat_tasks'},
+    },
     'clean-spam': {
         'task': 'clean-spam',
-        'schedule': datetime.timedelta(hours=12),
+        'schedule': datetime.timedelta(hours=1),
+        'options': {'queue': 'beat_tasks'},
+    },
+    'clean-social-spam': {
+        'task': 'clean-social-spam',
+        'schedule': datetime.timedelta(hours=6),
         'options': {'queue': 'beat_tasks'},
     },
     'premium-expire': {
@@ -668,9 +692,16 @@ MONGOANALYTICSDB = connect(MONGO_ANALYTICS_DB.pop('name'), **MONGO_ANALYTICS_DB)
 BROKER_BACKEND = "redis"
 BROKER_URL = "redis://%s:6379/%s" % (REDIS['host'], CELERY_REDIS_DB_NUM)
 CELERY_RESULT_BACKEND = BROKER_URL
-SESSION_REDIS_HOST = REDIS_SESSIONS['host']
-SESSION_REDIS_RETRY_ON_TIMEOUT = True
-SESSION_REDIS_SOCKET_TIMEOUT = 10
+
+SESSION_REDIS = {
+    'host': REDIS_SESSIONS['host'],
+    'port': 6379,
+    'db': SESSION_REDIS_DB,
+    # 'password': 'password',
+    'prefix': '',
+    'socket_timeout': 10,
+    'retry_on_timeout': True
+}
 
 CACHES = {
     'default': {
@@ -691,9 +722,9 @@ REDIS_FEED_UPDATE_POOL     = redis.ConnectionPool(host=REDIS['host'], port=6379,
 REDIS_STORY_HASH_TEMP_POOL = redis.ConnectionPool(host=REDIS['host'], port=6379, db=10)
 # REDIS_CACHE_POOL         = redis.ConnectionPool(host=REDIS['host'], port=6379, db=6) # Duped in CACHES
 REDIS_STORY_HASH_POOL      = redis.ConnectionPool(host=REDIS_STORY['host'], port=6379, db=1)
-REDIS_FEED_READ_POOL       = redis.ConnectionPool(host=SESSION_REDIS_HOST, port=6379, db=1)
-REDIS_FEED_SUB_POOL        = redis.ConnectionPool(host=SESSION_REDIS_HOST, port=6379, db=2)
-REDIS_SESSION_POOL         = redis.ConnectionPool(host=SESSION_REDIS_HOST, port=6379, db=5)
+REDIS_FEED_READ_POOL       = redis.ConnectionPool(host=REDIS_SESSIONS['host'], port=6379, db=1)
+REDIS_FEED_SUB_POOL        = redis.ConnectionPool(host=REDIS_SESSIONS['host'], port=6379, db=2)
+REDIS_SESSION_POOL         = redis.ConnectionPool(host=REDIS_SESSIONS['host'], port=6379, db=5)
 REDIS_PUBSUB_POOL          = redis.ConnectionPool(host=REDIS_PUBSUB['host'], port=6379, db=0)
 
 # ==========

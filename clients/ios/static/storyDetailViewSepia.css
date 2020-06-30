@@ -38,6 +38,9 @@ body {
 .NB-story-permalink {
     color: #111111;
 }
+.NB-story-toggle-changes {
+    color: #818776;
+}
 .NB-story-date {
     color: #818776;
 }
@@ -237,4 +240,6 @@ a:active {
     -webkit-box-shadow: inset 0px 1px 1px rgba(0, 0, 0, .1);
 }
 
-
+.NB-text-view-premium-only {
+    background-color: #FFFEE5;
+}
