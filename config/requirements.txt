@@ -109,7 +109,7 @@ simplejson==3.17.2
 six==1.15.0
 smartypants==2.0.1
 soupsieve==2.2.1
-sqlparse==0.4.1
+sqlparse==0.4.2
 stevedore==3.3.0
 stripe==2.55.1
 subdomains==3.0.1
